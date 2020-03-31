@@ -279,11 +279,9 @@ static int far_fill(struct gtp5g_far *far, struct gtp5g_dev *gtp, struct genl_in
         return -EINVAL;
 
     far->id = nla_get_u32(info->attrs[GTP5G_FAR_ID]);
-    pr_info("Get FAR ID: %u\n", far->id);
 
     if (info->attrs[GTP5G_FAR_APPLY_ACTION]) {
         far->action = nla_get_u8(info->attrs[GTP5G_FAR_APPLY_ACTION]);
-        pr_info("Set FAR apply action: %u\n", far->action);
     }
 
     if (info->attrs[GTP5G_FAR_FORWARDING_PARAMETER] &&
@@ -310,13 +308,9 @@ static int far_fill(struct gtp5g_far *far, struct gtp5g_dev *gtp, struct genl_in
                 return -EINVAL;
 
             hdr_creation->description = nla_get_u16(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_DESCRIPTION]);
-            pr_info("Set FAR hdr creation description: %u\n", hdr_creation->description);
             hdr_creation->teid = nla_get_u32(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_O_TEID]);
-            pr_info("Set FAR hdr creation TEID: %u\n", hdr_creation->teid);
             hdr_creation->peer_addr_ipv4.s_addr = nla_get_be32(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_PEER_ADDR_IPV4]);
-            pr_info("Set FAR hdr creation peer IPv4: %u\n", hdr_creation->peer_addr_ipv4.s_addr);
             hdr_creation->port = nla_get_u16(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_PORT]);
-            pr_info("Set FAR hdr creation port: %u\n", hdr_creation->port);
         }
     }
 
@@ -326,12 +320,10 @@ static int far_fill(struct gtp5g_far *far, struct gtp5g_dev *gtp, struct genl_in
         if (*pdr->far_id == far->id) {
             pdr->far = far;
             if (unix_sock_client_update(pdr) < 0)
-                pr_err("PDR[%u] update fail when FAR[%u] apply action is changed",
+                pr_warn("PDR[%u] update fail when FAR[%u] apply action is changed",
                     pdr->id, far->id);
         }
     }
-
-    pr_info("Finish far_fill\n");
 
     return 0;
 }
@@ -388,11 +380,9 @@ static int pdr_fill(struct gtp5g_pdr *pdr, struct gtp5g_dev *gtp, struct genl_in
 
     pdr->af = AF_INET;
     pdr->id = nla_get_u16(info->attrs[GTP5G_PDR_ID]);
-    pr_info("Get PDR ID: %u\n", pdr->id);
 
     if (info->attrs[GTP5G_PDR_PRECEDENCE]) {
         pdr->precedence = nla_get_u32(info->attrs[GTP5G_PDR_PRECEDENCE]);
-        pr_info("Set PDR precedence: %u", pdr->precedence);
     }
 
     if (info->attrs[GTP5G_OUTER_HEADER_REMOVAL]) {
@@ -403,7 +393,6 @@ static int pdr_fill(struct gtp5g_pdr *pdr, struct gtp5g_dev *gtp, struct genl_in
         }
 
         *pdr->outer_header_removal = nla_get_u8(info->attrs[GTP5G_OUTER_HEADER_REMOVAL]);
-        pr_info("Set PDR hdr removal: %u", *pdr->outer_header_removal);
     }
 
     /* Not in 3GPP spec, just used for routing */
@@ -425,7 +414,6 @@ static int pdr_fill(struct gtp5g_pdr *pdr, struct gtp5g_dev *gtp, struct genl_in
         }
 
         *pdr->far_id = nla_get_u32(info->attrs[GTP5G_PDR_FAR_ID]);
-        pr_info("Set PDR FAR ID: %u", *pdr->far_id);
 
         if (!hlist_unhashed(&pdr->hlist_related_far))
             hlist_del_rcu(&pdr->hlist_related_far);
@@ -750,15 +738,13 @@ static struct rtable *ip4_find_route(struct sk_buff *skb, struct iphdr *iph,
 
 	rt = ip_route_output_key(dev_net(gtp_dev), fl4);
 	if (IS_ERR(rt)) {
-		netdev_dbg(gtp_dev, "no route to %pI4\n", &iph->daddr);
-		pr_info("no route to %pI4\n", &iph->daddr);
+		pr_warn("no route to %pI4\n", &iph->daddr);
 		gtp_dev->stats.tx_carrier_errors++;
 		goto err;
 	}
 
 	if (rt->dst.dev == gtp_dev) {
-		netdev_dbg(gtp_dev, "circular route to %pI4\n", &iph->daddr);
-		pr_info("circular route to %pI4\n", &iph->daddr);
+		pr_warn("circular route to %pI4\n", &iph->daddr);
 		gtp_dev->stats.collisions++;
 		goto err_rt;
 	}
@@ -939,7 +925,7 @@ static netdev_tx_t gtp5g_dev_xmit(struct sk_buff *skb, struct net_device *dev)
     unsigned int proto = ntohs(skb->protocol);
     struct gtp5g_pktinfo pktinfo;
     int ret;
-pr_info("Enter gtp5g_dev_xmit\n");
+
     /* Ensure there is sufficient headroom. */
     if (skb_cow_head(skb, dev->needed_headroom))
         goto tx_err;
@@ -2131,13 +2117,11 @@ static int gtp5g_add_far(struct gtp5g_dev *gtp, struct genl_info *info)
         err = far_fill(far, gtp, info);
 
         if (err < 0) {
-            netdev_dbg(dev, "5G GTP update FAR id[%d] fail", far_id);
             far_context_delete(far);
-            pr_info("5G GTP update FAR id[%d] fail: %d\n", far_id, err);
+            pr_warn("5G GTP update FAR id[%d] fail: %d\n", far_id, err);
         }
         else {
             netdev_dbg(dev, "5G GTP update FAR id[%d]", far_id);
-            pr_info("5G GTP update FAR id[%d]\n", far_id);
         }
         return err;
     }
@@ -2192,7 +2176,6 @@ static int gtp5g_genl_add_far(struct sk_buff *skb, struct genl_info *info)
     }
 
     err = gtp5g_add_far(gtp, info);
-    pr_info("Finish gtp5g_add_far: %d\n", err);
 
 UNLOCK:
     rcu_read_unlock();
