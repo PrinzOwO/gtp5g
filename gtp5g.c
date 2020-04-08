@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* GTP according to 3GPP TS 29.281 / 3GPP TS 29.244
+/* GTP5G according to 3GPP TS 29.281 / 3GPP TS 29.244
  *
- * Author: Yao-Wen Chang <yaowen.cs08g@nctu.edu.tw>
+ * Author: Yao-Wen Chang <yaowenowo@gmail.com>
  *	   Chi Chang <edingroot@gmail.com>
  */
 
@@ -309,9 +309,9 @@ static int far_fill(struct gtp5g_far *far, struct gtp5g_dev *gtp, struct genl_in
                 return -EINVAL;
 
             hdr_creation->description = nla_get_u16(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_DESCRIPTION]);
-            hdr_creation->teid = nla_get_u32(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_O_TEID]);
+            hdr_creation->teid = htonl(nla_get_u32(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_O_TEID]));
             hdr_creation->peer_addr_ipv4.s_addr = nla_get_be32(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_PEER_ADDR_IPV4]);
-            hdr_creation->port = nla_get_u16(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_PORT]);
+            hdr_creation->port = htons(nla_get_u16(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_PORT]));
         }
     }
 
@@ -466,7 +466,7 @@ static int pdr_fill(struct gtp5g_pdr *pdr, struct gtp5g_dev *gtp, struct genl_in
                 hlist_del_rcu(&pdr->hlist_i_teid);
             }
 
-            f_teid->teid = nla_get_u32(f_teid_attrs[GTP5G_F_TEID_I_TEID]);
+            f_teid->teid = htonl(nla_get_u32(f_teid_attrs[GTP5G_F_TEID_I_TEID]));
             last_ppdr = NULL;
             head = &gtp->i_teid_hash[u32_hashfn(f_teid->teid) % gtp->hash_size];
             hlist_for_each_entry_rcu(ppdr, head, hlist_i_teid) {
@@ -739,13 +739,13 @@ static struct rtable *ip4_find_route(struct sk_buff *skb, struct iphdr *iph,
 
 	rt = ip_route_output_key(dev_net(gtp_dev), fl4);
 	if (IS_ERR(rt)) {
-		pr_warn("no route to %pI4\n", &iph->daddr);
+		netdev_dbg(gtp_dev, "no route to %pI4\n", &iph->daddr);
 		gtp_dev->stats.tx_carrier_errors++;
 		goto err;
 	}
 
 	if (rt->dst.dev == gtp_dev) {
-		pr_warn("circular route to %pI4\n", &iph->daddr);
+		netdev_dbg(gtp_dev, "circular route to %pI4\n", &iph->daddr);
 		gtp_dev->stats.collisions++;
 		goto err_rt;
 	}
@@ -848,7 +848,7 @@ static int gtp5g_buf_skb_ipv4(struct sk_buff *skb, struct net_device *dev,
     // TODO: handle nonlinear part
     if (unix_sock_send(pdr, skb->data, skb_headlen(skb)) < 0)
         rt = -EBADMSG;
-    
+
     return rt;
 }
 
@@ -863,7 +863,6 @@ static int gtp5g_handle_skb_ipv4(struct sk_buff *skb, struct net_device *dev,
     /* Read the IP destination address and resolve the PDR.
      * Prepend PDR header with TEI/TID from PDR.
      */
-
     iph = ip_hdr(skb);
     if (gtp->role == GTP5G_ROLE_UPF)
         pdr = pdr_find_by_ipv4(gtp, iph->daddr);
@@ -1835,7 +1834,7 @@ static int gtp5g_add_pdr(struct gtp5g_dev *gtp, struct genl_info *info)
     err = pdr_fill(pdr, gtp, info);
 
     if (err < 0) {
-        netdev_dbg(dev, "5G GTP add PDR id[%d] fail\n", pdr_id);
+        pr_warn("5G GTP add PDR id[%d] fail: %d\n", pdr_id, err);
         pdr_context_delete(pdr);
     }
     else {
@@ -1953,7 +1952,7 @@ static int gtp5g_genl_fill_pdr(struct sk_buff *skb, u32 snd_portid, u32 snd_seq,
                 goto GENLMSG_FAIL;
 
             f_teid = pdi->f_teid;
-            if (nla_put_u32(skb, GTP5G_F_TEID_I_TEID, f_teid->teid) ||
+            if (nla_put_u32(skb, GTP5G_F_TEID_I_TEID, ntohl(f_teid->teid)) ||
                 nla_put_be32(skb, GTP5G_F_TEID_GTPU_ADDR_IPV4, f_teid->gtpu_addr_ipv4.s_addr))
                 goto GENLMSG_FAIL;
 
@@ -2277,9 +2276,9 @@ static int gtp5g_genl_fill_far(struct sk_buff *skb, u32 snd_portid, u32 snd_seq,
 
             hdr_creation = fwd_param->hdr_creation;
             if (nla_put_u16(skb, GTP5G_OUTER_HEADER_CREATION_DESCRIPTION, hdr_creation->description) ||
-                nla_put_u32(skb, GTP5G_OUTER_HEADER_CREATION_O_TEID, hdr_creation->teid) ||
+                nla_put_u32(skb, GTP5G_OUTER_HEADER_CREATION_O_TEID, ntohl(hdr_creation->teid)) ||
                 nla_put_be32(skb, GTP5G_OUTER_HEADER_CREATION_PEER_ADDR_IPV4, hdr_creation->peer_addr_ipv4.s_addr) ||
-                nla_put_u16(skb, GTP5G_OUTER_HEADER_CREATION_PORT, hdr_creation->port))
+                nla_put_u16(skb, GTP5G_OUTER_HEADER_CREATION_PORT, ntohs(hdr_creation->port)))
                 goto GENLMSG_FAIL;
 
             nla_nest_end(skb, nest_hdr_creation);
