@@ -763,7 +763,7 @@ static struct rtable *ip4_find_route(struct sk_buff *skb, struct iphdr *iph,
 		mtu = dst_mtu(&rt->dst);
 	}
 	
-	rt->dst.ops->update_pmtu(&rt->dst, NULL, skb, mtu);
+	rt->dst.ops->update_pmtu(&rt->dst, NULL, skb, mtu, false);
 
 	if (!skb_is_gso(skb) && (iph->frag_off & htons(IP_DF)) &&
 	    mtu < ntohs(iph->tot_len)) {
