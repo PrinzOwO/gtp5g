@@ -694,7 +694,7 @@ static void gtp5g_push_header(struct sk_buff *skb, struct gtp5g_pktinfo *pktinfo
      *	  +--+--+--+--+--+--+--+--+
      *	  |version |PT| 0| E| S|PN|
      *	  +--+--+--+--+--+--+--+--+
-     *	    0  0  1  1	1  0  0  0
+     *	    0  0  1  1	0  0  0  0
      */
     gtp1->flags	= 0x30; /* v1, GTP-non-prime. */
     gtp1->type	= GTP_TPDU;
@@ -1408,7 +1408,7 @@ static int gtp5g_fwd_skb_encap(struct sk_buff *skb, struct net_device *dev,
 		gtp1 = (struct gtp1_header *)(skb->data + sizeof(struct udphdr));
 		gtp1->tid = far->fwd_param->hdr_creation->teid;
 
-		skb_push(skb, 20);
+		skb_push(skb, hdrlen);
 		iph = ip_hdr(skb);
 
 		if (!pdr->pdi->f_teid) {
@@ -1510,6 +1510,33 @@ static int gtp5g_rx(struct gtp5g_pdr *pdr, struct sk_buff *skb,
     return rt;
 }
 
+static u16 get_gtpu_header_len(struct sk_buff *skb, u16 prefix_hdrlen)
+{
+    u8 *gtp1 = (skb->data + prefix_hdrlen);
+    u8 *ext_hdr = NULL;
+
+    /** TS 29.281 Chapter 5.1 and Figure 5.1-1
+     * GTP-U header at least 8 byte
+     *
+     * This field shall be present if and only if any one or more of the S, PN and E flags are set.
+     * This field means seq number (2 Octect), N-PDU number (1 Octet) and  Next ext hdr type (1 Octet).
+     */
+    u16 rt_len = 8 + ((*gtp1 & 0x07) ? 4 : 0);
+
+    /** TS 29.281 Chapter 5.2 and Figure 5.2.1-1
+     * The length of the Extension header shall be defined in a variable length of 4 octets,
+     * i.e. m+1 = n*4 octets, where n is a positive integer.
+     */
+    if (*gtp1 & 0x04) {
+        /* ext_hdr will always point to "Next ext hdr type" */
+        while (*(ext_hdr = gtp1 + rt_len - 1)) {
+            rt_len += (*(++ext_hdr)) * 4;
+        }
+    }
+
+    return rt_len;
+}
+
 static int gtp1u_udp_encap_recv(struct gtp5g_dev *gtp, struct sk_buff *skb)
 {
     unsigned int hdrlen = sizeof(struct udphdr) +
@@ -1528,14 +1555,7 @@ static int gtp1u_udp_encap_recv(struct gtp5g_dev *gtp, struct sk_buff *skb)
     if (gtp1->type != GTP_TPDU)
         return 1;
 
-    /* From 29.060: "This field shall be present if and only if any one or
-     * more of the S, PN and E flags are set.".
-     *
-     * If any of the bit is set, then the remaining ones also have to be
-     * set.
-     */
-    if (gtp1->flags & GTP1_F_MASK)
-        hdrlen += 4;
+    hdrlen = sizeof(struct udphdr) + get_gtpu_header_len(skb, sizeof(struct udphdr));
 
     // Make sure the header is larger enough, including extensions.
     if (!pskb_may_pull(skb, hdrlen))
