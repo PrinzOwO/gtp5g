@@ -905,7 +905,7 @@ static void gtp5g_xmit_skb_ipv4(struct sk_buff *skb, struct gtp5g_pktinfo *pktin
                             ip4_dst_hoplimit(&pktinfo->rt->dst),
                             0,
                             pktinfo->gtph_port, pktinfo->gtph_port,
-                            true, false);
+                            true, true);
     }
 /* TODO: Need to implement with gtp5g_handle_skb_ipv4
     if (action & FAR_ACTION_BUFF) {
