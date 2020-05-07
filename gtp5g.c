@@ -1408,7 +1408,7 @@ static int gtp5g_fwd_skb_encap(struct sk_buff *skb, struct net_device *dev,
 		gtp1 = (struct gtp1_header *)(skb->data + sizeof(struct udphdr));
 		gtp1->tid = far->fwd_param->hdr_creation->teid;
 
-		skb_push(skb, hdrlen);
+		skb_push(skb, 20); // L3 Header Length
 		iph = ip_hdr(skb);
 
 		if (!pdr->pdi->f_teid) {
