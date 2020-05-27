@@ -7,6 +7,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/version.h>
 #include <linux/module.h>
 #include <linux/skbuff.h>
 #include <linux/udp.h>
@@ -763,8 +764,11 @@ static struct rtable *ip4_find_route(struct sk_buff *skb, struct iphdr *iph,
 		mtu = dst_mtu(&rt->dst);
 	}
 	
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0)
 	rt->dst.ops->update_pmtu(&rt->dst, NULL, skb, mtu, false);
-
+#else
+	rt->dst.ops->update_pmtu(&rt->dst, NULL, skb, mtu);
+#endif
 	if (!skb_is_gso(skb) && (iph->frag_off & htons(IP_DF)) &&
 	    mtu < ntohs(iph->tot_len)) {
 		netdev_dbg(gtp_dev, "packet too big, fragmentation needed\n");
