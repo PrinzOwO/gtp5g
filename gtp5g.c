@@ -18,6 +18,7 @@
 #include <linux/gtp.h>
 #include <linux/range.h>
 #include <linux/un.h>
+#include <linux/version.h>
 
 #include <net/net_namespace.h>
 #include <net/protocol.h>
@@ -763,7 +764,11 @@ static struct rtable *ip4_find_route(struct sk_buff *skb, struct iphdr *iph,
 		mtu = dst_mtu(&rt->dst);
 	}
 	
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 8))
+	rt->dst.ops->update_pmtu(&rt->dst, NULL, skb, mtu, true);
+#else
 	rt->dst.ops->update_pmtu(&rt->dst, NULL, skb, mtu);
+#endif
 
 	if (!skb_is_gso(skb) && (iph->frag_off & htons(IP_DF)) &&
 	    mtu < ntohs(iph->tot_len)) {
