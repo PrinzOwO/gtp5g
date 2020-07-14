@@ -1148,6 +1148,10 @@ static void gtp5g_link_setup(struct net_device *dev)
 
     dev->hard_header_len = 0;
     dev->addr_len = 0;
+    dev->mtu = ETH_DATA_LEN -
+	    (sizeof(struct iphdr) +
+	     sizeof(struct udphdr) +
+	     sizeof(struct gtp1_header));
 
     /* Zero header length. */
     dev->type = ARPHRD_NONE;
