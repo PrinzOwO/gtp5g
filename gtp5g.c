@@ -1518,7 +1518,7 @@ static int gtp5g_rx(struct gtp5g_pdr *pdr, struct sk_buff *skb,
     return rt;
 }
 
-static u16 get_gtpu_header_len(struct sk_buff *skb, u16 prefix_hdrlen)
+static int get_gtpu_header_len(struct sk_buff *skb, u16 prefix_hdrlen)
 {
     u8 *gtp1 = (skb->data + prefix_hdrlen);
     u8 *ext_hdr = NULL;
@@ -1539,6 +1539,8 @@ static u16 get_gtpu_header_len(struct sk_buff *skb, u16 prefix_hdrlen)
         /* ext_hdr will always point to "Next ext hdr type" */
         while (*(ext_hdr = gtp1 + rt_len - 1)) {
             rt_len += (*(++ext_hdr)) * 4;
+            if (!pskb_may_pull(skb, rt_len + prefix_hdrlen))
+                return -1;
         }
     }
 
@@ -1551,6 +1553,7 @@ static int gtp1u_udp_encap_recv(struct gtp5g_dev *gtp, struct sk_buff *skb)
                           sizeof(struct gtp1_header);
     struct gtp1_header *gtp1;
     struct gtp5g_pdr *pdr;
+    int gtp1_header_len;
 
     if (!pskb_may_pull(skb, hdrlen))
         return -1;
@@ -1563,11 +1566,11 @@ static int gtp1u_udp_encap_recv(struct gtp5g_dev *gtp, struct sk_buff *skb)
     if (gtp1->type != GTP_TPDU)
         return 1;
 
-    hdrlen = sizeof(struct udphdr) + get_gtpu_header_len(skb, sizeof(struct udphdr));
-
-    // Make sure the header is larger enough, including extensions.
-    if (!pskb_may_pull(skb, hdrlen))
+    gtp1_header_len = get_gtpu_header_len(skb, sizeof(struct udphdr));
+    if (gtp1_header_len < 0)
         return -1;
+
+    hdrlen = sizeof(struct udphdr) + gtp1_header_len;
 
     gtp1 = (struct gtp1_header *)(skb->data + sizeof(struct udphdr));
 
