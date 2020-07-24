@@ -72,11 +72,22 @@ struct outer_header_creation {
     u16 port;
 };
 
+struct forwarding_policy {
+    /* TODO: Simplify to a IPv4 address temporarily, maybe it can be improved in future
+    int len;
+    char *id;
+    */
+
+    /* Not IEs in 3GPP Spec, just simplify from id and len in gtp5g_forwarding_policy */
+    struct in_addr specific_addr_ipv4;
+};
+
 struct forwarding_parameter {
 //    uint8_t dest_int;
 //    char *network_instance;
 
     struct outer_header_creation *hdr_creation;
+    struct forwarding_policy *fwd_policy;
 };
 
 struct gtp5g_far {
@@ -271,6 +282,7 @@ static int far_fill(struct gtp5g_far *far, struct gtp5g_dev *gtp, struct genl_in
     struct nlattr *fwd_param_attrs[GTP5G_FORWARDING_PARAMETER_ATTR_MAX + 1];
     struct nlattr *hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_ATTR_MAX + 1];
     struct outer_header_creation *hdr_creation;
+    struct forwarding_policy *fwd_policy;
 
     // Update related PDR for buffering
     struct gtp5g_pdr *pdr;
@@ -312,6 +324,17 @@ static int far_fill(struct gtp5g_far *far, struct gtp5g_dev *gtp, struct genl_in
             hdr_creation->teid = htonl(nla_get_u32(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_O_TEID]));
             hdr_creation->peer_addr_ipv4.s_addr = nla_get_be32(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_PEER_ADDR_IPV4]);
             hdr_creation->port = htons(nla_get_u16(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_PORT]));
+        }
+
+        if (fwd_param_attrs[GTP5G_FORWARDING_PARAMETER_FORWARDING_POLICY]) {
+            if (!far->fwd_param->fwd_policy) {
+                far->fwd_param->fwd_policy = kzalloc(sizeof(*far->fwd_param->fwd_policy), GFP_ATOMIC);
+                if (!far->fwd_param->fwd_policy)
+                    return -ENOMEM;
+            }
+            fwd_policy = far->fwd_param->fwd_policy;
+
+            fwd_policy->specific_addr_ipv4.s_addr = nla_get_be32(fwd_param_attrs[GTP5G_FORWARDING_PARAMETER_FORWARDING_POLICY]);
         }
     }
 
@@ -910,17 +933,6 @@ static void gtp5g_xmit_skb_ipv4(struct sk_buff *skb, struct gtp5g_pktinfo *pktin
                             pktinfo->gtph_port, pktinfo->gtph_port,
                             true, true);
     }
-/* TODO: Need to implement with gtp5g_handle_skb_ipv4
-    if (action & FAR_ACTION_BUFF) {
-
-    }
-    if (action & FAR_ACTION_NOCP) {
-
-    }
-    if (action & FAR_ACTION_DUPL) {
-
-    }
-*/
 }
 
 static netdev_tx_t gtp5g_dev_xmit(struct sk_buff *skb, struct net_device *dev)
@@ -1036,8 +1048,10 @@ static void far_context_free(struct rcu_head *head)
     if (!far)
         return;
 
-    if (fwd_param)
+    if (fwd_param) {
         kfree(fwd_param->hdr_creation);
+        kfree(fwd_param->fwd_policy);
+    }
 
     kfree(fwd_param);
     kfree(far);
