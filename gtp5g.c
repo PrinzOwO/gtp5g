@@ -7,6 +7,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/kernel.h>
 #include <linux/version.h>
 #include <linux/module.h>
 #include <linux/skbuff.h>
@@ -73,13 +74,11 @@ struct outer_header_creation {
 };
 
 struct forwarding_policy {
-    /* TODO: Simplify to a IPv4 address temporarily, maybe it can be improved in future
     int len;
-    char *id;
-    */
+    char identifier[0xff + 1];
 
-    /* Not IEs in 3GPP Spec, just simplify from id and len in gtp5g_forwarding_policy */
-    struct in_addr specific_addr_ipv4;
+    /* Exact value to handle forwarding policy */
+    u32 mark;
 };
 
 struct forwarding_parameter {
@@ -147,7 +146,7 @@ struct gtp5g_dev {
     struct hlist_head    *i_teid_hash;      // Used for GTP-U packet detect
     struct hlist_head    *addr_hash;        // Used for IPv4 packet detect
 
-    /* IEs list related to PDR*/
+    /* IEs list related to PDR */
     struct hlist_head    *related_far_hash;     // PDR list waiting the FAR to handle
 };
 
@@ -334,7 +333,14 @@ static int far_fill(struct gtp5g_far *far, struct gtp5g_dev *gtp, struct genl_in
             }
             fwd_policy = far->fwd_param->fwd_policy;
 
-            fwd_policy->specific_addr_ipv4.s_addr = nla_get_be32(fwd_param_attrs[GTP5G_FORWARDING_PARAMETER_FORWARDING_POLICY]);
+            fwd_policy->len = nla_len(fwd_param_attrs[GTP5G_FORWARDING_PARAMETER_FORWARDING_POLICY]);
+            if (fwd_policy->len >= sizeof(fwd_policy->identifier))
+                return -EINVAL;
+            strncpy(fwd_policy->identifier, nla_data(fwd_param_attrs[GTP5G_FORWARDING_PARAMETER_FORWARDING_POLICY]), fwd_policy->len);
+
+            /* Exact value to handle forwarding policy */
+            if (!(fwd_policy->mark = simple_strtol(fwd_policy->identifier, NULL, 10)))
+                return -EINVAL;
         }
     }
 
@@ -1418,52 +1424,60 @@ static int gtp5g_fwd_skb_encap(struct sk_buff *skb, struct net_device *dev,
                                 unsigned int hdrlen, struct gtp5g_pdr *pdr)
 {
     struct gtp5g_far *far = pdr->far;
+    struct forwarding_parameter *fwd_param = far->fwd_param;
+    struct outer_header_creation *hdr_creation;
+    struct forwarding_policy *fwd_policy;
+
     struct gtp1_header *gtp1;
     struct iphdr *iph;
 	struct udphdr *uh;
 
     struct pcpu_sw_netstats *stats;
 
-    if (far->fwd_param && far->fwd_param->hdr_creation) {
-		// Just modify the teid and packet dest ip
-		gtp1 = (struct gtp1_header *)(skb->data + sizeof(struct udphdr));
-		gtp1->tid = far->fwd_param->hdr_creation->teid;
+    if (fwd_param) {
+        if ((fwd_policy = fwd_param->fwd_policy))
+            skb->mark = fwd_policy->mark;
 
-		skb_push(skb, 20); // L3 Header Length
-		iph = ip_hdr(skb);
+        if ((hdr_creation = fwd_param->hdr_creation)) {
+            // Just modify the teid and packet dest ip
+            gtp1 = (struct gtp1_header *)(skb->data + sizeof(struct udphdr));
+            gtp1->tid = hdr_creation->teid;
 
-		if (!pdr->pdi->f_teid) {
-			pr_err("Unable to handle hdr removal + creation "
-				"due to pdr->pdi->f_teid not exist\n");
-			return -1;
-		}
-		
-		iph->saddr = pdr->pdi->f_teid->gtpu_addr_ipv4.s_addr;
-		iph->daddr = far->fwd_param->hdr_creation->peer_addr_ipv4.s_addr;
-		iph->check = 0;
+            skb_push(skb, 20); // L3 Header Length
+            iph = ip_hdr(skb);
 
-		uh = udp_hdr(skb);
-		uh->check = 0;
+            if (!pdr->pdi->f_teid) {
+                pr_err("Unable to handle hdr removal + creation "
+                    "due to pdr->pdi->f_teid not exist\n");
+                return -1;
+            }
+            
+            iph->saddr = pdr->pdi->f_teid->gtpu_addr_ipv4.s_addr;
+            iph->daddr = hdr_creation->peer_addr_ipv4.s_addr;
+            iph->check = 0;
 
-		if (ip_xmit(skb, pdr->sk, dev) < 0) {
-			pr_err("ip_xmit error\n");
-			return -1;
-		}
+            uh = udp_hdr(skb);
+            uh->check = 0;
 
-        return 0;
+            if (ip_xmit(skb, pdr->sk, dev) < 0) {
+                pr_err("ip_xmit error\n");
+                return -1;
+            }
+
+            return 0;
+        }
 	}
-	else {
-		// Get rid of the GTP + UDP headers.
-		if (iptunnel_pull_header(skb, hdrlen, skb->protocol,
-								!net_eq(sock_net(pdr->sk), dev_net(dev))))
-			return -1;
+	
+    // Get rid of the GTP + UDP headers.
+    if (iptunnel_pull_header(skb, hdrlen, skb->protocol,
+                            !net_eq(sock_net(pdr->sk), dev_net(dev))))
+        return -1;
 
-		/* Now that the UDP and the GTP header have been removed, set up the
-		 * new network header. This is required by the upper layer to
-		 * calculate the transport header.
-		 */
-		skb_reset_network_header(skb);
-	}
+    /* Now that the UDP and the GTP header have been removed, set up the
+        * new network header. This is required by the upper layer to
+        * calculate the transport header.
+        */
+    skb_reset_network_header(skb);
 
     skb->dev = dev;
 
@@ -2264,6 +2278,7 @@ static int gtp5g_genl_fill_far(struct sk_buff *skb, u32 snd_portid, u32 snd_seq,
     struct nlattr *nest_fwd_param, *nest_hdr_creation;
     struct forwarding_parameter *fwd_param;
     struct outer_header_creation *hdr_creation;
+    struct forwarding_policy *fwd_policy;
 
     int cnt;
     struct gtp5g_dev *gtp = netdev_priv(far->dev);
@@ -2297,6 +2312,10 @@ static int gtp5g_genl_fill_far(struct sk_buff *skb, u32 snd_portid, u32 snd_seq,
 
             nla_nest_end(skb, nest_hdr_creation);
         }
+
+        if ((fwd_policy = fwd_param->fwd_policy))
+            if (nla_put(skb, GTP5G_FORWARDING_PARAMETER_FORWARDING_POLICY, fwd_policy->len, fwd_policy->identifier))
+                goto GENLMSG_FAIL;
 
         nla_nest_end(skb, nest_fwd_param);
     }
