@@ -13,6 +13,13 @@ clean:
  
 install:
 	modprobe udp_tunnel
-	insmod $(MODULE_NAME).ko
+	cp $(MODULE_NAME).ko /lib/modules/`uname -r`
+	depmod -a
+	modprobe $(MODULE_NAME)
+	echo "gtp5g" >> /etc/modules
+
 uninstall:
 	rmmod $(MODULE_NAME)
+	rm -f /lib/modules/`uname -r`/$(MODULE_NAME).ko
+	depmod -a
+	sed -zi "s/gtp5g\n//g" /etc/modules
