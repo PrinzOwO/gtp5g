@@ -373,17 +373,102 @@ static struct gtp5g_pdr *pdr_find_by_id(struct gtp5g_dev *gtp, u16 id)
     return NULL;
 }
 
-static struct gtp5g_pdr *pdr_find_by_ipv4(struct gtp5g_dev *gtp, __be32 addr)
+static int ipv4_match(__be32 target_addr, __be32 ifa_addr, __be32 ifa_mask) {
+    return !((target_addr ^ ifa_addr) & ifa_mask);
+}
+
+static int ports_match(struct range *match_list, int list_len, __be16 port) {
+    int i;
+
+    if (!list_len)
+        return 1;
+
+    for (i = 0; i < list_len; i++) {
+        if (match_list[i].start <= port && match_list[i].end >= port)
+            return 1;
+    }
+    return 0;
+}
+
+static int sdf_filter_match(struct sdf_filter *sdf, struct sk_buff *skb, unsigned int hdrlen, u8 direction)
+{
+    struct iphdr *iph;
+    struct ip_filter_rule *rule;
+
+    const __be16 *pptr;
+	__be16 _ports[2];
+
+    if (!sdf)
+        return 1;
+
+    if (!pskb_may_pull(skb, hdrlen + sizeof(struct iphdr)))
+            goto MISMATCH;
+ 
+    iph = (struct iphdr *)(skb->data + hdrlen);
+
+    if (sdf->rule) {
+        rule = sdf->rule;
+        if (rule->direction != direction)
+            goto MISMATCH;
+
+        if (rule->proto != 0xff && rule->proto != iph->protocol)
+            goto MISMATCH;
+
+        if (!ipv4_match(iph->saddr, rule->src.s_addr, rule->smask.s_addr))
+            goto MISMATCH;
+
+        if (!ipv4_match(iph->daddr, rule->dest.s_addr, rule->dmask.s_addr))
+            goto MISMATCH;
+        
+        if (rule->sport_num + rule->dport_num > 0) {
+            if (!(pptr = skb_header_pointer(skb, hdrlen + sizeof(struct iphdr), sizeof(_ports), _ports)))
+                goto MISMATCH;
+
+            if (!ports_match(rule->sport, rule->sport_num, ntohs(pptr[0])))
+                goto MISMATCH;
+            
+            if (!ports_match(rule->dport, rule->dport_num, ntohs(pptr[1])))
+                goto MISMATCH;
+        }
+    }
+
+    if (sdf->tos_traffic_class)
+        pr_info("ToS traffic class check does not implement yet\n");
+    
+    if (sdf->security_param_idx)
+        pr_info("Security parameter index check does not implement yet\n");
+
+    if (sdf->flow_label)
+        pr_info("Flow label check does not implement yet\n");
+
+    if (sdf->bi_id)
+        pr_info("SDF filter ID check does not implement yet\n");
+
+    return 1;
+
+MISMATCH:
+    return 0;
+}
+
+static struct gtp5g_pdr *pdr_find_by_ipv4(struct gtp5g_dev *gtp, struct sk_buff *skb,
+                                  unsigned int hdrlen, __be32 addr)
 {
     struct hlist_head *head;
     struct gtp5g_pdr *pdr;
+    struct gtp5g_pdi *pdi;
 
     head = &gtp->addr_hash[ipv4_hashfn(addr) % gtp->hash_size];
 
     hlist_for_each_entry_rcu(pdr, head, hlist_addr) {
+        pdi = pdr->pdi;
+
         // TODO: Move the value we check into first level
-        if (pdr->af == AF_INET && pdr->pdi->ue_addr_ipv4->s_addr == addr)
+        if (pdr->af == AF_INET && pdi->ue_addr_ipv4->s_addr == addr)
             return pdr;
+        
+        if (pdi->sdf)
+            if (!sdf_filter_match(pdi->sdf, skb, hdrlen, GTP5G_SDF_FILTER_OUT))
+                continue;
     }
 
     return NULL;
@@ -896,9 +981,9 @@ static int gtp5g_handle_skb_ipv4(struct sk_buff *skb, struct net_device *dev,
      */
     iph = ip_hdr(skb);
     if (gtp->role == GTP5G_ROLE_UPF)
-        pdr = pdr_find_by_ipv4(gtp, iph->daddr);
+        pdr = pdr_find_by_ipv4(gtp, skb, 0, iph->daddr);
     else
-        pdr = pdr_find_by_ipv4(gtp, iph->saddr);
+        pdr = pdr_find_by_ipv4(gtp, skb, 0, iph->saddr);
 
     if (!pdr) {
         netdev_dbg(dev, "no PDR found for %pI4, skip\n",
@@ -1291,83 +1376,6 @@ static void gtp5g_encap_destroy(struct sock *sk)
     rtnl_lock();
     __gtp5g_encap_destroy(sk);
     rtnl_unlock();
-}
-
-static int ipv4_match(__be32 target_addr, __be32 ifa_addr, __be32 ifa_mask) {
-    return !((target_addr ^ ifa_addr) & ifa_mask);
-}
-
-static int ports_match(struct range *match_list, int list_len, __be16 port) {
-    int i;
-
-    if (!list_len)
-        return 1;
-
-    for (i = 0; i < list_len; i++) {
-        if (match_list[i].start <= port && match_list[i].end >= port)
-            return 1;
-    }
-    return 0;
-}
-
-static int sdf_filter_match(struct sdf_filter *sdf, struct sk_buff *skb, unsigned int hdrlen, u8 direction)
-{
-    struct iphdr *iph;
-    struct ip_filter_rule *rule;
-
-    const __be16 *pptr;
-	__be16 _ports[2];
-
-    if (!sdf)
-        return 1;
-
-    if (!pskb_may_pull(skb, hdrlen + sizeof(struct iphdr)))
-            goto MISMATCH;
- 
-    iph = (struct iphdr *)(skb->data + hdrlen);
-
-    if (sdf->rule) {
-        rule = sdf->rule;
-        if (rule->direction != direction)
-            goto MISMATCH;
-
-        if (rule->proto != 0xff && rule->proto != iph->protocol)
-            goto MISMATCH;
-
-        if (!ipv4_match(iph->saddr, rule->src.s_addr, rule->smask.s_addr))
-            goto MISMATCH;
-
-        if (!ipv4_match(iph->daddr, rule->dest.s_addr, rule->dmask.s_addr))
-            goto MISMATCH;
-        
-        if (rule->sport_num + rule->dport_num > 0) {
-            if (!(pptr = skb_header_pointer(skb, hdrlen + sizeof(struct iphdr), sizeof(_ports), _ports)))
-                goto MISMATCH;
-
-            if (!ports_match(rule->sport, rule->sport_num, ntohs(pptr[0])))
-                goto MISMATCH;
-            
-            if (!ports_match(rule->dport, rule->dport_num, ntohs(pptr[1])))
-                goto MISMATCH;
-        }
-    }
-
-    if (sdf->tos_traffic_class)
-        pr_info("ToS traffic class check does not implement yet\n");
-    
-    if (sdf->security_param_idx)
-        pr_info("Security parameter index check does not implement yet\n");
-
-    if (sdf->flow_label)
-        pr_info("Flow label check does not implement yet\n");
-
-    if (sdf->bi_id)
-        pr_info("SDF filter ID check does not implement yet\n");
-
-    return 1;
-
-MISMATCH:
-    return 0;
 }
 
 static struct gtp5g_pdr *pdr_find_by_gtp1u(struct gtp5g_dev *gtp, struct sk_buff *skb,
