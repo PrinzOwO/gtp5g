@@ -472,9 +472,6 @@ static int pdr_fill(struct gtp5g_pdr *pdr, struct gtp5g_dev *gtp, struct genl_in
                     return -ENOMEM;
             }
 
-            if (!hlist_unhashed(&pdr->hlist_addr))
-                hlist_del_rcu(&pdr->hlist_addr);
-
             pdi->ue_addr_ipv4->s_addr = nla_get_be32(pdi_attrs[GTP5G_PDI_UE_ADDR_IPV4]);
         }
 
@@ -491,25 +488,7 @@ static int pdr_fill(struct gtp5g_pdr *pdr, struct gtp5g_dev *gtp, struct genl_in
             }
             f_teid = pdi->f_teid;
 
-            if (!hlist_unhashed(&pdr->hlist_i_teid)){
-                hlist_del_rcu(&pdr->hlist_i_teid);
-            }
-
             f_teid->teid = htonl(nla_get_u32(f_teid_attrs[GTP5G_F_TEID_I_TEID]));
-            last_ppdr = NULL;
-            head = &gtp->i_teid_hash[u32_hashfn(f_teid->teid) % gtp->hash_size];
-            hlist_for_each_entry_rcu(ppdr, head, hlist_i_teid) {
-                if (pdr->precedence > ppdr->precedence)
-                    last_ppdr = ppdr;
-                else
-                    break;
-            }
-
-            if(!last_ppdr)
-                hlist_add_head_rcu(&pdr->hlist_i_teid, head);
-            else
-                hlist_add_behind_rcu(&pdr->hlist_i_teid, &last_ppdr->hlist_i_teid);
-
             f_teid->gtpu_addr_ipv4.s_addr = nla_get_be32(f_teid_attrs[GTP5G_F_TEID_GTPU_ADDR_IPV4]);
         }
 
@@ -630,9 +609,32 @@ static int pdr_fill(struct gtp5g_pdr *pdr, struct gtp5g_dev *gtp, struct genl_in
                 *sdf->bi_id = nla_get_u32(sdf_attrs[GTP5G_SDF_FILTER_SDF_FILTER_ID]);
             }
         }
+    }
 
-        // Add into hash table only for downlink
-        if (pdi->ue_addr_ipv4 && !f_teid) {
+    if (!hlist_unhashed(&pdr->hlist_i_teid))
+        hlist_del_rcu(&pdr->hlist_i_teid);
+
+    if (!hlist_unhashed(&pdr->hlist_addr))
+        hlist_del_rcu(&pdr->hlist_addr);
+
+    // Update hlist table
+    if ((pdi = pdr->pdi)) {
+        if ((f_teid = pdi->f_teid)) {
+            last_ppdr = NULL;
+            head = &gtp->i_teid_hash[u32_hashfn(f_teid->teid) % gtp->hash_size];
+            hlist_for_each_entry_rcu(ppdr, head, hlist_i_teid) {
+                if (pdr->precedence > ppdr->precedence)
+                    last_ppdr = ppdr;
+                else
+                    break;
+            }
+
+            if(!last_ppdr)
+                hlist_add_head_rcu(&pdr->hlist_i_teid, head);
+            else
+                hlist_add_behind_rcu(&pdr->hlist_i_teid, &last_ppdr->hlist_i_teid);
+        }
+        else if (pdi->ue_addr_ipv4) {
             last_ppdr = NULL;
             head = &gtp->addr_hash[u32_hashfn(pdi->ue_addr_ipv4->s_addr) % gtp->hash_size];
             hlist_for_each_entry_rcu(ppdr, head, hlist_addr) {
