@@ -1,12 +1,13 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* GTP according to 3GPP TS 29.281 / 3GPP TS 29.244
+/* GTP5G according to 3GPP TS 29.281 / 3GPP TS 29.244
  *
- * Author: Yao-Wen Chang <yaowen.cs08g@nctu.edu.tw>
+ * Author: Yao-Wen Chang <yaowenowo@gmail.com>
  *	   Chi Chang <edingroot@gmail.com>
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/kernel.h>
 #include <linux/version.h>
 #include <linux/module.h>
 #include <linux/skbuff.h>
@@ -42,7 +43,7 @@ struct ip_filter_rule {
     uint8_t direction;                  // in/out
     uint8_t proto;                      // number or "ip" which is not used for matching
     struct in_addr src, smask;          // ip addr or "any" -> 0.0.0.0
-    struct in_addr dest, dmask;         // ip addr or "assigned" -> 0.0.0.0
+    struct in_addr dest, dmask;         // ip addr or "any" -> 0.0.0.0
     int sport_num;                      // Conut for sport
     struct range *sport;                // one value, range or not existed -> [0, 0]
     int dport_num;                      // Counter for dport
@@ -72,11 +73,20 @@ struct outer_header_creation {
     u16 port;
 };
 
+struct forwarding_policy {
+    int len;
+    char identifier[0xff + 1];
+
+    /* Exact value to handle forwarding policy */
+    u32 mark;
+};
+
 struct forwarding_parameter {
 //    uint8_t dest_int;
 //    char *network_instance;
 
     struct outer_header_creation *hdr_creation;
+    struct forwarding_policy *fwd_policy;
 };
 
 struct gtp5g_far {
@@ -136,7 +146,7 @@ struct gtp5g_dev {
     struct hlist_head    *i_teid_hash;      // Used for GTP-U packet detect
     struct hlist_head    *addr_hash;        // Used for IPv4 packet detect
 
-    /* IEs list related to PDR*/
+    /* IEs list related to PDR */
     struct hlist_head    *related_far_hash;     // PDR list waiting the FAR to handle
 };
 
@@ -271,6 +281,7 @@ static int far_fill(struct gtp5g_far *far, struct gtp5g_dev *gtp, struct genl_in
     struct nlattr *fwd_param_attrs[GTP5G_FORWARDING_PARAMETER_ATTR_MAX + 1];
     struct nlattr *hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_ATTR_MAX + 1];
     struct outer_header_creation *hdr_creation;
+    struct forwarding_policy *fwd_policy;
 
     // Update related PDR for buffering
     struct gtp5g_pdr *pdr;
@@ -309,9 +320,27 @@ static int far_fill(struct gtp5g_far *far, struct gtp5g_dev *gtp, struct genl_in
                 return -EINVAL;
 
             hdr_creation->description = nla_get_u16(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_DESCRIPTION]);
-            hdr_creation->teid = nla_get_u32(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_O_TEID]);
+            hdr_creation->teid = htonl(nla_get_u32(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_O_TEID]));
             hdr_creation->peer_addr_ipv4.s_addr = nla_get_be32(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_PEER_ADDR_IPV4]);
-            hdr_creation->port = nla_get_u16(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_PORT]);
+            hdr_creation->port = htons(nla_get_u16(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_PORT]));
+        }
+
+        if (fwd_param_attrs[GTP5G_FORWARDING_PARAMETER_FORWARDING_POLICY]) {
+            if (!far->fwd_param->fwd_policy) {
+                far->fwd_param->fwd_policy = kzalloc(sizeof(*far->fwd_param->fwd_policy), GFP_ATOMIC);
+                if (!far->fwd_param->fwd_policy)
+                    return -ENOMEM;
+            }
+            fwd_policy = far->fwd_param->fwd_policy;
+
+            fwd_policy->len = nla_len(fwd_param_attrs[GTP5G_FORWARDING_PARAMETER_FORWARDING_POLICY]);
+            if (fwd_policy->len >= sizeof(fwd_policy->identifier))
+                return -EINVAL;
+            strncpy(fwd_policy->identifier, nla_data(fwd_param_attrs[GTP5G_FORWARDING_PARAMETER_FORWARDING_POLICY]), fwd_policy->len);
+
+            /* Exact value to handle forwarding policy */
+            if (!(fwd_policy->mark = simple_strtol(fwd_policy->identifier, NULL, 10)))
+                return -EINVAL;
         }
     }
 
@@ -344,17 +373,102 @@ static struct gtp5g_pdr *pdr_find_by_id(struct gtp5g_dev *gtp, u16 id)
     return NULL;
 }
 
-static struct gtp5g_pdr *pdr_find_by_ipv4(struct gtp5g_dev *gtp, __be32 addr)
+static int ipv4_match(__be32 target_addr, __be32 ifa_addr, __be32 ifa_mask) {
+    return !((target_addr ^ ifa_addr) & ifa_mask);
+}
+
+static int ports_match(struct range *match_list, int list_len, __be16 port) {
+    int i;
+
+    if (!list_len)
+        return 1;
+
+    for (i = 0; i < list_len; i++) {
+        if (match_list[i].start <= port && match_list[i].end >= port)
+            return 1;
+    }
+    return 0;
+}
+
+static int sdf_filter_match(struct sdf_filter *sdf, struct sk_buff *skb, unsigned int hdrlen, u8 direction)
+{
+    struct iphdr *iph;
+    struct ip_filter_rule *rule;
+
+    const __be16 *pptr;
+	__be16 _ports[2];
+
+    if (!sdf)
+        return 1;
+
+    if (!pskb_may_pull(skb, hdrlen + sizeof(struct iphdr)))
+            goto MISMATCH;
+ 
+    iph = (struct iphdr *)(skb->data + hdrlen);
+
+    if (sdf->rule) {
+        rule = sdf->rule;
+        if (rule->direction != direction)
+            goto MISMATCH;
+
+        if (rule->proto != 0xff && rule->proto != iph->protocol)
+            goto MISMATCH;
+
+        if (!ipv4_match(iph->saddr, rule->src.s_addr, rule->smask.s_addr))
+            goto MISMATCH;
+
+        if (!ipv4_match(iph->daddr, rule->dest.s_addr, rule->dmask.s_addr))
+            goto MISMATCH;
+        
+        if (rule->sport_num + rule->dport_num > 0) {
+            if (!(pptr = skb_header_pointer(skb, hdrlen + sizeof(struct iphdr), sizeof(_ports), _ports)))
+                goto MISMATCH;
+
+            if (!ports_match(rule->sport, rule->sport_num, ntohs(pptr[0])))
+                goto MISMATCH;
+            
+            if (!ports_match(rule->dport, rule->dport_num, ntohs(pptr[1])))
+                goto MISMATCH;
+        }
+    }
+
+    if (sdf->tos_traffic_class)
+        pr_info("ToS traffic class check does not implement yet\n");
+    
+    if (sdf->security_param_idx)
+        pr_info("Security parameter index check does not implement yet\n");
+
+    if (sdf->flow_label)
+        pr_info("Flow label check does not implement yet\n");
+
+    if (sdf->bi_id)
+        pr_info("SDF filter ID check does not implement yet\n");
+
+    return 1;
+
+MISMATCH:
+    return 0;
+}
+
+static struct gtp5g_pdr *pdr_find_by_ipv4(struct gtp5g_dev *gtp, struct sk_buff *skb,
+                                  unsigned int hdrlen, __be32 addr)
 {
     struct hlist_head *head;
     struct gtp5g_pdr *pdr;
+    struct gtp5g_pdi *pdi;
 
     head = &gtp->addr_hash[ipv4_hashfn(addr) % gtp->hash_size];
 
     hlist_for_each_entry_rcu(pdr, head, hlist_addr) {
+        pdi = pdr->pdi;
+
         // TODO: Move the value we check into first level
-        if (pdr->af == AF_INET && pdr->pdi->ue_addr_ipv4->s_addr == addr)
+        if (pdr->af == AF_INET && pdi->ue_addr_ipv4->s_addr == addr)
             return pdr;
+        
+        if (pdi->sdf)
+            if (!sdf_filter_match(pdi->sdf, skb, hdrlen, GTP5G_SDF_FILTER_OUT))
+                continue;
     }
 
     return NULL;
@@ -443,9 +557,6 @@ static int pdr_fill(struct gtp5g_pdr *pdr, struct gtp5g_dev *gtp, struct genl_in
                     return -ENOMEM;
             }
 
-            if (!hlist_unhashed(&pdr->hlist_addr))
-                hlist_del_rcu(&pdr->hlist_addr);
-
             pdi->ue_addr_ipv4->s_addr = nla_get_be32(pdi_attrs[GTP5G_PDI_UE_ADDR_IPV4]);
         }
 
@@ -462,25 +573,7 @@ static int pdr_fill(struct gtp5g_pdr *pdr, struct gtp5g_dev *gtp, struct genl_in
             }
             f_teid = pdi->f_teid;
 
-            if (!hlist_unhashed(&pdr->hlist_i_teid)){
-                hlist_del_rcu(&pdr->hlist_i_teid);
-            }
-
-            f_teid->teid = nla_get_u32(f_teid_attrs[GTP5G_F_TEID_I_TEID]);
-            last_ppdr = NULL;
-            head = &gtp->i_teid_hash[u32_hashfn(f_teid->teid) % gtp->hash_size];
-            hlist_for_each_entry_rcu(ppdr, head, hlist_i_teid) {
-                if (pdr->precedence > ppdr->precedence)
-                    last_ppdr = ppdr;
-                else
-                    break;
-            }
-
-            if(!last_ppdr)
-                hlist_add_head_rcu(&pdr->hlist_i_teid, head);
-            else
-                hlist_add_behind_rcu(&pdr->hlist_i_teid, &last_ppdr->hlist_i_teid);
-
+            f_teid->teid = htonl(nla_get_u32(f_teid_attrs[GTP5G_F_TEID_I_TEID]));
             f_teid->gtpu_addr_ipv4.s_addr = nla_get_be32(f_teid_attrs[GTP5G_F_TEID_GTPU_ADDR_IPV4]);
         }
 
@@ -601,9 +694,32 @@ static int pdr_fill(struct gtp5g_pdr *pdr, struct gtp5g_dev *gtp, struct genl_in
                 *sdf->bi_id = nla_get_u32(sdf_attrs[GTP5G_SDF_FILTER_SDF_FILTER_ID]);
             }
         }
+    }
 
-        // Add into hash table only for downlink
-        if (pdi->ue_addr_ipv4 && !f_teid) {
+    if (!hlist_unhashed(&pdr->hlist_i_teid))
+        hlist_del_rcu(&pdr->hlist_i_teid);
+
+    if (!hlist_unhashed(&pdr->hlist_addr))
+        hlist_del_rcu(&pdr->hlist_addr);
+
+    // Update hlist table
+    if ((pdi = pdr->pdi)) {
+        if ((f_teid = pdi->f_teid)) {
+            last_ppdr = NULL;
+            head = &gtp->i_teid_hash[u32_hashfn(f_teid->teid) % gtp->hash_size];
+            hlist_for_each_entry_rcu(ppdr, head, hlist_i_teid) {
+                if (pdr->precedence > ppdr->precedence)
+                    last_ppdr = ppdr;
+                else
+                    break;
+            }
+
+            if(!last_ppdr)
+                hlist_add_head_rcu(&pdr->hlist_i_teid, head);
+            else
+                hlist_add_behind_rcu(&pdr->hlist_i_teid, &last_ppdr->hlist_i_teid);
+        }
+        else if (pdi->ue_addr_ipv4) {
             last_ppdr = NULL;
             head = &gtp->addr_hash[u32_hashfn(pdi->ue_addr_ipv4->s_addr) % gtp->hash_size];
             hlist_for_each_entry_rcu(ppdr, head, hlist_addr) {
@@ -739,13 +855,13 @@ static struct rtable *ip4_find_route(struct sk_buff *skb, struct iphdr *iph,
 
 	rt = ip_route_output_key(dev_net(gtp_dev), fl4);
 	if (IS_ERR(rt)) {
-		pr_warn("no route to %pI4\n", &iph->daddr);
+		netdev_dbg(gtp_dev, "no route to %pI4\n", &iph->daddr);
 		gtp_dev->stats.tx_carrier_errors++;
 		goto err;
 	}
 
 	if (rt->dst.dev == gtp_dev) {
-		pr_warn("circular route to %pI4\n", &iph->daddr);
+		netdev_dbg(gtp_dev, "circular route to %pI4\n", &iph->daddr);
 		gtp_dev->stats.collisions++;
 		goto err_rt;
 	}
@@ -848,7 +964,7 @@ static int gtp5g_buf_skb_ipv4(struct sk_buff *skb, struct net_device *dev,
     // TODO: handle nonlinear part
     if (unix_sock_send(pdr, skb->data, skb_headlen(skb)) < 0)
         rt = -EBADMSG;
-    
+
     return rt;
 }
 
@@ -863,12 +979,11 @@ static int gtp5g_handle_skb_ipv4(struct sk_buff *skb, struct net_device *dev,
     /* Read the IP destination address and resolve the PDR.
      * Prepend PDR header with TEI/TID from PDR.
      */
-
     iph = ip_hdr(skb);
     if (gtp->role == GTP5G_ROLE_UPF)
-        pdr = pdr_find_by_ipv4(gtp, iph->daddr);
+        pdr = pdr_find_by_ipv4(gtp, skb, 0, iph->daddr);
     else
-        pdr = pdr_find_by_ipv4(gtp, iph->saddr);
+        pdr = pdr_find_by_ipv4(gtp, skb, 0, iph->saddr);
 
     if (!pdr) {
         netdev_dbg(dev, "no PDR found for %pI4, skip\n",
@@ -911,17 +1026,6 @@ static void gtp5g_xmit_skb_ipv4(struct sk_buff *skb, struct gtp5g_pktinfo *pktin
                             pktinfo->gtph_port, pktinfo->gtph_port,
                             true, true);
     }
-/* TODO: Need to implement with gtp5g_handle_skb_ipv4
-    if (action & FAR_ACTION_BUFF) {
-
-    }
-    if (action & FAR_ACTION_NOCP) {
-
-    }
-    if (action & FAR_ACTION_DUPL) {
-
-    }
-*/
 }
 
 static netdev_tx_t gtp5g_dev_xmit(struct sk_buff *skb, struct net_device *dev)
@@ -1037,8 +1141,10 @@ static void far_context_free(struct rcu_head *head)
     if (!far)
         return;
 
-    if (fwd_param)
+    if (fwd_param) {
         kfree(fwd_param->hdr_creation);
+        kfree(fwd_param->fwd_policy);
+    }
 
     kfree(fwd_param);
     kfree(far);
@@ -1272,83 +1378,6 @@ static void gtp5g_encap_destroy(struct sock *sk)
     rtnl_unlock();
 }
 
-static int ipv4_match(__be32 target_addr, __be32 ifa_addr, __be32 ifa_mask) {
-    return !((target_addr ^ ifa_addr) & ifa_mask);
-}
-
-static int ports_match(struct range *match_list, int list_len, __be16 port) {
-    int i;
-
-    if (!list_len)
-        return 1;
-
-    for (i = 0; i < list_len; i++) {
-        if (match_list[i].start <= port && match_list[i].end >= port)
-            return 1;
-    }
-    return 0;
-}
-
-static int sdf_filter_match(struct sdf_filter *sdf, struct sk_buff *skb, unsigned int hdrlen, u8 direction)
-{
-    struct iphdr *iph;
-    struct ip_filter_rule *rule;
-
-    const __be16 *pptr;
-	__be16 _ports[2];
-
-    if (!sdf)
-        return 1;
-
-    if (!pskb_may_pull(skb, hdrlen + sizeof(struct iphdr)))
-            goto MISMATCH;
- 
-    iph = (struct iphdr *)(skb->data + hdrlen);
-
-    if (sdf->rule) {
-        rule = sdf->rule;
-        if (rule->direction != direction)
-            goto MISMATCH;
-
-        if (rule->proto != 0xff && rule->proto != iph->protocol)
-            goto MISMATCH;
-
-        if (!ipv4_match(iph->saddr, rule->src.s_addr, rule->smask.s_addr))
-            goto MISMATCH;
-
-        if (!ipv4_match(iph->daddr, rule->dest.s_addr, rule->dmask.s_addr))
-            goto MISMATCH;
-        
-        if (rule->sport_num + rule->dport_num > 0) {
-            if (!(pptr = skb_header_pointer(skb, hdrlen + sizeof(struct iphdr), sizeof(_ports), _ports)))
-                goto MISMATCH;
-
-            if (!ports_match(rule->sport, rule->sport_num, ntohs(pptr[0])))
-                goto MISMATCH;
-            
-            if (!ports_match(rule->dport, rule->dport_num, ntohs(pptr[1])))
-                goto MISMATCH;
-        }
-    }
-
-    if (sdf->tos_traffic_class)
-        pr_info("ToS traffic class check does not implement yet\n");
-    
-    if (sdf->security_param_idx)
-        pr_info("Security parameter index check does not implement yet\n");
-
-    if (sdf->flow_label)
-        pr_info("Flow label check does not implement yet\n");
-
-    if (sdf->bi_id)
-        pr_info("SDF filter ID check does not implement yet\n");
-
-    return 1;
-
-MISMATCH:
-    return 0;
-}
-
 static struct gtp5g_pdr *pdr_find_by_gtp1u(struct gtp5g_dev *gtp, struct sk_buff *skb,
                                   unsigned int hdrlen, u32 teid)
 {
@@ -1405,52 +1434,60 @@ static int gtp5g_fwd_skb_encap(struct sk_buff *skb, struct net_device *dev,
                                 unsigned int hdrlen, struct gtp5g_pdr *pdr)
 {
     struct gtp5g_far *far = pdr->far;
+    struct forwarding_parameter *fwd_param = far->fwd_param;
+    struct outer_header_creation *hdr_creation;
+    struct forwarding_policy *fwd_policy;
+
     struct gtp1_header *gtp1;
     struct iphdr *iph;
 	struct udphdr *uh;
 
     struct pcpu_sw_netstats *stats;
 
-    if (far->fwd_param && far->fwd_param->hdr_creation) {
-		// Just modify the teid and packet dest ip
-		gtp1 = (struct gtp1_header *)(skb->data + sizeof(struct udphdr));
-		gtp1->tid = far->fwd_param->hdr_creation->teid;
+    if (fwd_param) {
+        if ((fwd_policy = fwd_param->fwd_policy))
+            skb->mark = fwd_policy->mark;
 
-		skb_push(skb, 20); // L3 Header Length
-		iph = ip_hdr(skb);
+        if ((hdr_creation = fwd_param->hdr_creation)) {
+            // Just modify the teid and packet dest ip
+            gtp1 = (struct gtp1_header *)(skb->data + sizeof(struct udphdr));
+            gtp1->tid = hdr_creation->teid;
 
-		if (!pdr->pdi->f_teid) {
-			pr_err("Unable to handle hdr removal + creation "
-				"due to pdr->pdi->f_teid not exist\n");
-			return -1;
-		}
-		
-		iph->saddr = pdr->pdi->f_teid->gtpu_addr_ipv4.s_addr;
-		iph->daddr = far->fwd_param->hdr_creation->peer_addr_ipv4.s_addr;
-		iph->check = 0;
+            skb_push(skb, 20); // L3 Header Length
+            iph = ip_hdr(skb);
 
-		uh = udp_hdr(skb);
-		uh->check = 0;
+            if (!pdr->pdi->f_teid) {
+                pr_err("Unable to handle hdr removal + creation "
+                    "due to pdr->pdi->f_teid not exist\n");
+                return -1;
+            }
+            
+            iph->saddr = pdr->pdi->f_teid->gtpu_addr_ipv4.s_addr;
+            iph->daddr = hdr_creation->peer_addr_ipv4.s_addr;
+            iph->check = 0;
 
-		if (ip_xmit(skb, pdr->sk, dev) < 0) {
-			pr_err("ip_xmit error\n");
-			return -1;
-		}
+            uh = udp_hdr(skb);
+            uh->check = 0;
 
-        return 0;
+            if (ip_xmit(skb, pdr->sk, dev) < 0) {
+                pr_err("ip_xmit error\n");
+                return -1;
+            }
+
+            return 0;
+        }
 	}
-	else {
-		// Get rid of the GTP + UDP headers.
-		if (iptunnel_pull_header(skb, hdrlen, skb->protocol,
-								!net_eq(sock_net(pdr->sk), dev_net(dev))))
-			return -1;
+	
+    // Get rid of the GTP + UDP headers.
+    if (iptunnel_pull_header(skb, hdrlen, skb->protocol,
+                            !net_eq(sock_net(pdr->sk), dev_net(dev))))
+        return -1;
 
-		/* Now that the UDP and the GTP header have been removed, set up the
-		 * new network header. This is required by the upper layer to
-		 * calculate the transport header.
-		 */
-		skb_reset_network_header(skb);
-	}
+    /* Now that the UDP and the GTP header have been removed, set up the
+        * new network header. This is required by the upper layer to
+        * calculate the transport header.
+        */
+    skb_reset_network_header(skb);
 
     skb->dev = dev;
 
@@ -1835,7 +1872,7 @@ static int gtp5g_add_pdr(struct gtp5g_dev *gtp, struct genl_info *info)
     err = pdr_fill(pdr, gtp, info);
 
     if (err < 0) {
-        netdev_dbg(dev, "5G GTP add PDR id[%d] fail\n", pdr_id);
+        pr_warn("5G GTP add PDR id[%d] fail: %d\n", pdr_id, err);
         pdr_context_delete(pdr);
     }
     else {
@@ -1953,7 +1990,7 @@ static int gtp5g_genl_fill_pdr(struct sk_buff *skb, u32 snd_portid, u32 snd_seq,
                 goto GENLMSG_FAIL;
 
             f_teid = pdi->f_teid;
-            if (nla_put_u32(skb, GTP5G_F_TEID_I_TEID, f_teid->teid) ||
+            if (nla_put_u32(skb, GTP5G_F_TEID_I_TEID, ntohl(f_teid->teid)) ||
                 nla_put_be32(skb, GTP5G_F_TEID_GTPU_ADDR_IPV4, f_teid->gtpu_addr_ipv4.s_addr))
                 goto GENLMSG_FAIL;
 
@@ -2251,6 +2288,7 @@ static int gtp5g_genl_fill_far(struct sk_buff *skb, u32 snd_portid, u32 snd_seq,
     struct nlattr *nest_fwd_param, *nest_hdr_creation;
     struct forwarding_parameter *fwd_param;
     struct outer_header_creation *hdr_creation;
+    struct forwarding_policy *fwd_policy;
 
     int cnt;
     struct gtp5g_dev *gtp = netdev_priv(far->dev);
@@ -2277,13 +2315,17 @@ static int gtp5g_genl_fill_far(struct sk_buff *skb, u32 snd_portid, u32 snd_seq,
 
             hdr_creation = fwd_param->hdr_creation;
             if (nla_put_u16(skb, GTP5G_OUTER_HEADER_CREATION_DESCRIPTION, hdr_creation->description) ||
-                nla_put_u32(skb, GTP5G_OUTER_HEADER_CREATION_O_TEID, hdr_creation->teid) ||
+                nla_put_u32(skb, GTP5G_OUTER_HEADER_CREATION_O_TEID, ntohl(hdr_creation->teid)) ||
                 nla_put_be32(skb, GTP5G_OUTER_HEADER_CREATION_PEER_ADDR_IPV4, hdr_creation->peer_addr_ipv4.s_addr) ||
-                nla_put_u16(skb, GTP5G_OUTER_HEADER_CREATION_PORT, hdr_creation->port))
+                nla_put_u16(skb, GTP5G_OUTER_HEADER_CREATION_PORT, ntohs(hdr_creation->port)))
                 goto GENLMSG_FAIL;
 
             nla_nest_end(skb, nest_hdr_creation);
         }
+
+        if ((fwd_policy = fwd_param->fwd_policy))
+            if (nla_put(skb, GTP5G_FORWARDING_PARAMETER_FORWARDING_POLICY, fwd_policy->len, fwd_policy->identifier))
+                goto GENLMSG_FAIL;
 
         nla_nest_end(skb, nest_fwd_param);
     }
