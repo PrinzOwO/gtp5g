@@ -4,7 +4,7 @@ For detailed information, please reference to 3GPP specification TS 29.281 and T
 
 ## Notice
 Due to the evolution of Linux kernel, this module would not work with every kernel version.
-Please run this module with kernel version `5.0.0-23-generic`.
+Please run this module with kernel version `5.0.0-23-generic` or upper than `5.4` (Ubuntu 20.04).
 
 Please check the [libgtp5gnl](https://github.com/PrinzOwO/libgtp5gnl) version is the same as gtp5g,
 because the type translating between libgtp5gnl and gtp5g had been changed.
