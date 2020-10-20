@@ -463,12 +463,14 @@ static struct gtp5g_pdr *pdr_find_by_ipv4(struct gtp5g_dev *gtp, struct sk_buff 
         pdi = pdr->pdi;
 
         // TODO: Move the value we check into first level
-        if (pdr->af == AF_INET && pdi->ue_addr_ipv4->s_addr == addr)
-            return pdr;
+        if (!(pdr->af == AF_INET && pdi->ue_addr_ipv4->s_addr == addr))
+            continue;
         
         if (pdi->sdf)
             if (!sdf_filter_match(pdi->sdf, skb, hdrlen, GTP5G_SDF_FILTER_OUT))
                 continue;
+
+        return pdr;
     }
 
     return NULL;
