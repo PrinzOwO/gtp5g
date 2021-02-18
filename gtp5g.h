@@ -248,13 +248,19 @@ enum gtp5g_pdr_attrs {
     GTP5G_PDR_PDI,
     GTP5G_OUTER_HEADER_REMOVAL,
     GTP5G_PDR_FAR_ID,
-    GTP5G_PDR_QER_ID,
 
     /* Not in 3GPP spec, just used for routing */
     GTP5G_PDR_ROLE_ADDR_IPV4,
 
     /* Not in 3GPP spec, just used for buffering */
     GTP5G_PDR_UNIX_SOCKET_PATH,
+
+    GTP5G_PDR_QER_ID,
+
+	/* Add newly supported feature ON ABOVE
+	 * for compatability with older version of
+	 * free5GC's UPF or libgtp5gnl
+	 * */
 
     __GTP5G_PDR_ATTR_MAX,
 };
