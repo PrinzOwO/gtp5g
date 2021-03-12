@@ -10,6 +10,7 @@
 #define GTP1U_PORT	2152
 
 #define GTP_TPDU	255
+#define GTP_EMARK	254
 
 /* According to 3GPP TS 29.060. */
 struct gtpv1_hdr {
