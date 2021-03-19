@@ -34,7 +34,7 @@
 
 #include "gtp5g.h"
 
-#define DRV_VERSION "1.0.0-f"
+#define DRV_VERSION "1.0.1-f"
 
 struct local_f_teid {
     u32     teid;                       // i_teid
@@ -399,54 +399,51 @@ static int far_fill(struct gtp5g_far *far, struct gtp5g_dev *gtp, struct genl_in
                 far->fwd_param->hdr_creation = kzalloc(sizeof(*far->fwd_param->hdr_creation), 
 													GFP_ATOMIC);
                 if (!far->fwd_param->hdr_creation) {
-					printk_ratelimited("%s:%d Failed to allocate FAR fwd Hdr creation\n",
-							__func__, __LINE__);
+                    printk_ratelimited("%s:%d Failed to allocate FAR fwd Hdr creation\n",__func__, __LINE__);
                     return -ENOMEM;
-				}
-				hdr_creation->description = nla_get_u16(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_DESCRIPTION]);
-				hdr_creation->teid = htonl(nla_get_u32(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_O_TEID]));
-				hdr_creation->peer_addr_ipv4.s_addr = nla_get_be32(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_PEER_ADDR_IPV4]);
-				hdr_creation->port = htons(nla_get_u16(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_PORT]));
-            } else {
-				u32 old_teid, old_peer_addr;
-				u16 old_port;
-
-            	hdr_creation = far->fwd_param->hdr_creation;
-				old_teid = hdr_creation->teid;
-				old_peer_addr = hdr_creation->peer_addr_ipv4.s_addr;
-				old_port = hdr_creation->port; 
-				hdr_creation->description = nla_get_u16(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_DESCRIPTION]);
-				hdr_creation->teid = htonl(nla_get_u32(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_O_TEID]));
-				hdr_creation->peer_addr_ipv4.s_addr = nla_get_be32(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_PEER_ADDR_IPV4]);
-				hdr_creation->port = htons(nla_get_u16(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_PORT]));
-
-				/* For Downlink traffic from UPF to gNB
-				 * In some cases,
-				 *	1) SMF will send PFCP Msg filled with FAR's TEID and gNB N3 addr as 0 
-				 *  2) Later time, SMF will send PFCP Msg filled with right value in 1)
-				 *  	2.a) We should send the GTP-U EndMarker to gNB
-				 *		2.b) SHOULD not set the flag as 1
-				 *	3) Xn Handover in b/w gNB then
-				 *		3.a) SMF will send modification of PDR, FAR(TEID and GTP-U)
-				 *		3.b) SHOULD set the flag as 1 and send GTP-U Marker for old gNB
-				 * */
-				if (flag && epkt_info && 
-					((old_teid | hdr_creation->teid) != 0) &&
-					((old_peer_addr | hdr_creation->peer_addr_ipv4.s_addr) != 0)) {
-
-					if (old_teid != hdr_creation->teid)
-						*flag = 1;
-
-					if (old_peer_addr != hdr_creation->peer_addr_ipv4.s_addr) 
-						*flag = 1;
-
-					if (*flag) {
-						epkt_info->teid = old_teid;
-						epkt_info->peer_addr = old_peer_addr;
-						epkt_info->gtph_port = old_port;
-					}
-				}
-			}
+                }
+                hdr_creation = far->fwd_param->hdr_creation;
+                hdr_creation->description = nla_get_u16(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_DESCRIPTION]);
+                hdr_creation->teid = htonl(nla_get_u32(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_O_TEID]));
+                hdr_creation->peer_addr_ipv4.s_addr = nla_get_be32(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_PEER_ADDR_IPV4]);
+                hdr_creation->port = htons(nla_get_u16(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_PORT]));
+             } else {
+                u32 old_teid, old_peer_addr;
+                u16 old_port;
+                hdr_creation = far->fwd_param->hdr_creation;
+                old_teid = hdr_creation->teid;
+                old_peer_addr = hdr_creation->peer_addr_ipv4.s_addr;
+                old_port = hdr_creation->port; 
+                hdr_creation->description = nla_get_u16(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_DESCRIPTION]);
+                hdr_creation->teid = htonl(nla_get_u32(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_O_TEID]));
+                hdr_creation->peer_addr_ipv4.s_addr = nla_get_be32(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_PEER_ADDR_IPV4]);
+                hdr_creation->port = htons(nla_get_u16(hdr_creation_attrs[GTP5G_OUTER_HEADER_CREATION_PORT]));
+                /* For Downlink traffic from UPF to gNB
+                 * In some cases,
+                 *  1) SMF will send PFCP Msg filled with FAR's TEID and gNB N3 addr as 0 
+                 *  2) Later time, SMF will send PFCP Msg filled with right value in 1)
+                 *      2.a) We should send the GTP-U EndMarker to gNB
+                 *      2.b) SHOULD not set the flag as 1
+                 *  3) Xn Handover in b/w gNB then
+                 *      3.a) SMF will send modification of PDR, FAR(TEID and GTP-U)
+                 *      3.b) SHOULD set the flag as 1 and send GTP-U Marker for old gNB
+                 * */
+                if ((flag != NULL && epkt_info != NULL)) {
+                    if ((old_teid != 0 && old_peer_addr != 0) &&
+                        ((old_teid != hdr_creation->teid ) || 
+                        (old_peer_addr != hdr_creation->peer_addr_ipv4.s_addr))) {
+                        if (old_teid != hdr_creation->teid)
+                            *flag = 1;
+                        if (old_peer_addr != hdr_creation->peer_addr_ipv4.s_addr) 
+                            *flag = 1;
+                        if (*flag) {
+                            epkt_info->teid = old_teid;
+                            epkt_info->peer_addr = old_peer_addr;
+                            epkt_info->gtph_port = old_port;
+                        }
+                    }
+                }
+            }
         }
 
         if (fwd_param_attrs[GTP5G_FORWARDING_PARAMETER_FORWARDING_POLICY]) {
@@ -476,15 +473,15 @@ static int far_fill(struct gtp5g_far *far, struct gtp5g_dev *gtp, struct genl_in
     head = &gtp->related_far_hash[u32_hashfn(far->id) % gtp->hash_size];
     hlist_for_each_entry_rcu(pdr, head, hlist_related_far) {
         if (*pdr->far_id == far->id) {
-			if (*flag) {
-				if (pdr->pdi && pdr->pdi->f_teid) {
-					// Get the UPF and routing ip address
-					epkt_info->local_addr = pdr->pdi->f_teid->gtpu_addr_ipv4.s_addr;
-					epkt_info->route_addr = pdr->role_addr_ipv4.s_addr;
-				} else {
-					*flag = 0;
-				}
-			}
+            if (flag != NULL && epkt_info != NULL && *flag) {
+                if (pdr->pdi && pdr->pdi->f_teid) {
+                    // Get the UPF and routing ip address
+                    epkt_info->local_addr = pdr->pdi->f_teid->gtpu_addr_ipv4.s_addr;
+                    epkt_info->route_addr = pdr->role_addr_ipv4.s_addr;
+                } else {
+                    *flag = 0;
+                }
+            }
             pdr->far = far;
             if (unix_sock_client_update(pdr) < 0)
                 pr_warn("PDR(%u) update fail when FAR(%u) apply action is changed",
@@ -2324,27 +2321,27 @@ static int gtp5g_gnl_add_pdr(struct gtp5g_dev *gtp, struct genl_info *info)
     }
 
     if (info->nlhdr->nlmsg_flags & NLM_F_REPLACE) {
-		netdev_dbg(dev, "Failed nlmsg set to NLM_F_REPLACE\n");
+        netdev_dbg(dev, "Failed nlmsg set to NLM_F_REPLACE\n");
         return -ENOENT;
 	}
 
     if (info->nlhdr->nlmsg_flags & NLM_F_APPEND) {
-		netdev_dbg(dev, "Failed nlmsg set to NLM_F_APPEND\n");
+        netdev_dbg(dev, "Failed nlmsg set to NLM_F_APPEND\n");
         return -EOPNOTSUPP;
 	}
 
     // Check only at the creation part
     if (!info->attrs[GTP5G_PDR_PRECEDENCE]) {
-		netdev_dbg(dev, "PDR precedence is not present\n");
+        netdev_dbg(dev, "PDR precedence is not present\n");
         return -EINVAL;
-	}
+    }
 
     pdr = kzalloc(sizeof(*pdr), GFP_ATOMIC);
     if (!pdr) {
-		printk_ratelimited("%s:%d Failed to allocate PDR memory\n", __func__,
-				__LINE__);
+        printk_ratelimited("%s:%d Failed to allocate PDR memory\n", 
+            __func__, __LINE__);
         return -ENOMEM;
-	}
+    }
 
     sock_hold(gtp->sk1u);
     pdr->sk = gtp->sk1u;
@@ -2680,10 +2677,10 @@ static int gtp5g_gnl_add_far(struct gtp5g_dev *gtp, struct genl_info *info)
 {
     struct net_device *dev = gtp->dev;
     struct gtp5g_far *far;
-	struct gtp5g_emark_pktinfo epkt_info;
+    struct gtp5g_emark_pktinfo epkt_info;
     int err = 0;
     u32 far_id;
-	u8	flag = 0;
+    u8  flag;
 
     far_id = nla_get_u32(info->attrs[GTP5G_FAR_ID]);
     far = far_find_by_id(gtp, far_id);
@@ -2693,29 +2690,32 @@ static int gtp5g_gnl_add_far(struct gtp5g_dev *gtp, struct genl_info *info)
         else if (!(info->nlhdr->nlmsg_flags & NLM_F_REPLACE))
             return -EOPNOTSUPP;
 
-        err = far_fill(far, gtp, info, &flag, &epkt_info);
-        if (err < 0) {
-            far_context_delete(far);
-            pr_warn("5G GTP update FAR id[%d] fail: %d\n", far_id, err);
-        } else {
-            netdev_dbg(dev, "5G GTP update FAR id[%d]", far_id);
-        }
-
-		// Send GTP-U End marker to gNB
-		if (flag) {
-			/* SKB size GTPU(8) + UDP(8) + IP(20) + Eth(14)  
-			 * + 2-Bytes align the IP header 
-			 * */
-			struct sk_buff *skb = __netdev_alloc_skb(dev, 52, GFP_KERNEL);
-			if (!skb) {
-				printk("%s:%d Failled to allocate buffer\n", __func__, __LINE__);
-				return err;
-			}	
-			skb_reserve(skb, 2);
-			skb->protocol = eth_type_trans(skb, dev);
-			gtp5g_fwd_emark_skb_ipv4(skb, dev, &epkt_info);		
+		flag = 0;
+		err = far_fill(far, gtp, info, &flag, &epkt_info);
+		if (err < 0) {
+			far_context_delete(far);
+			pr_warn("5G GTP update FAR id[%d] fail: %d\n", far_id, err);
+			return err;
+		} else {
+			netdev_dbg(dev, "5G GTP update FAR id[%d]", far_id);
 		}
-        return err;
+
+        // Send GTP-U End marker to gNB
+        if (flag) {
+            /* SKB size GTPU(8) + UDP(8) + IP(20) + Eth(14)  
+             * + 2-Bytes align the IP header 
+             * */
+            struct sk_buff *skb = __netdev_alloc_skb(dev, 52, GFP_KERNEL);
+            if (!skb) {
+                printk("%s:%d Failled to allocate buffer\n", __func__, __LINE__);
+                return err;
+            }
+            printk("%s:%d Going to send GTP-U EndMarker to gNB", __func__, __LINE__);
+            skb_reserve(skb, 2);
+            skb->protocol = eth_type_trans(skb, dev);
+            gtp5g_fwd_emark_skb_ipv4(skb, dev, &epkt_info);
+       }
+	   return err;
     }
 
     if (info->nlhdr->nlmsg_flags & NLM_F_REPLACE)
@@ -2724,16 +2724,15 @@ static int gtp5g_gnl_add_far(struct gtp5g_dev *gtp, struct genl_info *info)
     if (info->nlhdr->nlmsg_flags & NLM_F_APPEND)
         return -EOPNOTSUPP;
 
-    // Check only at the creation part
-    if (!info->attrs[GTP5G_FAR_APPLY_ACTION])
-        return -EINVAL;
+	// Check only at the creation part
+	if (!info->attrs[GTP5G_FAR_APPLY_ACTION])
+	    return -EINVAL;
 
-    far = kzalloc(sizeof(*far), GFP_ATOMIC);
-    if (!far) {
-		printk_ratelimited("%s:%d Failed to allocate FAR\n", __func__, __LINE__);
+	far = kzalloc(sizeof(*far), GFP_ATOMIC);
+	if (!far) {
+        printk_ratelimited("%s:%d Failed to allocate FAR\n", __func__, __LINE__);
         return -ENOMEM;
     }
-
     far->dev = gtp->dev;
 
     err = far_fill(far, gtp, info, NULL, NULL);
@@ -2742,10 +2741,9 @@ static int gtp5g_gnl_add_far(struct gtp5g_dev *gtp, struct genl_info *info)
         far_context_delete(far);
     } else {
         hlist_add_head_rcu(&far->hlist_id, 
-			&gtp->far_id_hash[u32_hashfn(far_id) % gtp->hash_size]);
+            &gtp->far_id_hash[u32_hashfn(far_id) % gtp->hash_size]);
         netdev_dbg(dev, "5G GTP add FAR id[%d]", far_id);
     }
-
     return err;
 }
 
@@ -3596,6 +3594,9 @@ static struct pernet_operations gtp5g_net_ops = {
 static int __init gtp5g_init(void)
 {
     int err;
+
+    printk("%s:%d Gtp5g Module initialization Ver: %s\n",
+       __func__, __LINE__, DRV_VERSION);
 
     get_random_bytes(&gtp5g_h_initval, sizeof(gtp5g_h_initval));
 
