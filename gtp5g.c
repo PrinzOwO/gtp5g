@@ -429,9 +429,8 @@ static int far_fill(struct gtp5g_far *far, struct gtp5g_dev *gtp, struct genl_in
                  *      3.b) SHOULD set the flag as 1 and send GTP-U Marker for old gNB
                  * */
                 if ((flag != NULL && epkt_info != NULL)) {
-                    if ((old_teid != 0 && old_peer_addr != 0) &&
-                        ((old_teid != hdr_creation->teid ) || 
-                        (old_peer_addr != hdr_creation->peer_addr_ipv4.s_addr))) {
+                    if (((old_teid & hdr_creation->teid) != 0 && ((old_peer_addr & hdr_creation->peer_addr_ipv4.s_addr) != 0)) &&
+                        ((old_teid != hdr_creation->teid ) || (old_peer_addr != hdr_creation->peer_addr_ipv4.s_addr))) {
                         if (old_teid != hdr_creation->teid)
                             *flag = 1;
                         if (old_peer_addr != hdr_creation->peer_addr_ipv4.s_addr) 
