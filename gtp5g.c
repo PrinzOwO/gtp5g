@@ -34,7 +34,7 @@
 
 #include "gtp5g.h"
 
-#define DRV_VERSION "1.0.1-f"
+#define DRV_VERSION "1.0.1-f0"
 
 struct local_f_teid {
     u32     teid;                       // i_teid
@@ -410,6 +410,7 @@ static int far_fill(struct gtp5g_far *far, struct gtp5g_dev *gtp, struct genl_in
              } else {
                 u32 old_teid, old_peer_addr;
                 u16 old_port;
+
                 hdr_creation = far->fwd_param->hdr_creation;
                 old_teid = hdr_creation->teid;
                 old_peer_addr = hdr_creation->peer_addr_ipv4.s_addr;
@@ -431,15 +432,11 @@ static int far_fill(struct gtp5g_far *far, struct gtp5g_dev *gtp, struct genl_in
                 if ((flag != NULL && epkt_info != NULL)) {
                     if (((old_teid & hdr_creation->teid) != 0 && ((old_peer_addr & hdr_creation->peer_addr_ipv4.s_addr) != 0)) &&
                         ((old_teid != hdr_creation->teid ) || (old_peer_addr != hdr_creation->peer_addr_ipv4.s_addr))) {
-                        if (old_teid != hdr_creation->teid)
-                            *flag = 1;
-                        if (old_peer_addr != hdr_creation->peer_addr_ipv4.s_addr) 
-                            *flag = 1;
-                        if (*flag) {
-                            epkt_info->teid = old_teid;
-                            epkt_info->peer_addr = old_peer_addr;
-                            epkt_info->gtph_port = old_port;
-                        }
+						printk("%s:%d Flag set as 1\n", __func__, __LINE__);
+						*flag = 1;
+						epkt_info->teid = old_teid;
+						epkt_info->peer_addr = old_peer_addr;
+						epkt_info->gtph_port = old_port;
                     }
                 }
             }
@@ -1310,7 +1307,7 @@ static int gtp5g_handle_skb_ipv4(struct sk_buff *skb, struct net_device *dev,
     struct gtp5g_dev *gtp = netdev_priv(dev);
     struct gtp5g_pdr *pdr;
     struct gtp5g_far *far;
-    struct gtp5g_qer *qer;
+    //struct gtp5g_qer *qer;
     struct iphdr *iph;
 
     /* Read the IP destination address and resolve the PDR.
@@ -1327,15 +1324,15 @@ static int gtp5g_handle_skb_ipv4(struct sk_buff *skb, struct net_device *dev,
                    &iph->daddr);
         return -ENOENT;
     }
-    netdev_dbg(dev, "found PDR %p\n", pdr);
+    //netdev_dbg(dev, "found PDR %p\n", pdr);
 
 	/* TODO: QoS rule have to apply before apply FAR 
 	 * */
-	qer = pdr->qer;
-	if (qer) {
-		netdev_dbg(dev, "%s:%d QER Rule found, id(%#x) qfi(%#x) TODO\n", 
-				__func__, __LINE__, qer->id, qer->qfi);
-	} 
+	//qer = pdr->qer;
+	//if (qer) {
+	//	netdev_dbg(dev, "%s:%d QER Rule found, id(%#x) qfi(%#x) TODO\n", 
+	//			__func__, __LINE__, qer->id, qer->qfi);
+	//} 
 
     far = pdr->far;
     if (far) {
@@ -1361,8 +1358,8 @@ static int gtp5g_handle_skb_ipv4(struct sk_buff *skb, struct net_device *dev,
 static void gtp5g_xmit_skb_ipv4(struct sk_buff *skb, struct gtp5g_pktinfo *pktinfo, u32 action)
 {
     if (action & FAR_ACTION_FORW) {
-        netdev_dbg(pktinfo->dev, "gtp -> IP src: %pI4 dst: %pI4\n",
-                   &pktinfo->iph->saddr, &pktinfo->iph->daddr);
+        //netdev_dbg(pktinfo->dev, "gtp -> IP src: %pI4 dst: %pI4\n",
+        //           &pktinfo->iph->saddr, &pktinfo->iph->daddr);
         udp_tunnel_xmit_skb(pktinfo->rt, pktinfo->sk, skb,
                             pktinfo->fl4.saddr, pktinfo->fl4.daddr,
                             pktinfo->iph->tos,
@@ -2695,9 +2692,8 @@ static int gtp5g_gnl_add_far(struct gtp5g_dev *gtp, struct genl_info *info)
 			far_context_delete(far);
 			pr_warn("5G GTP update FAR id[%d] fail: %d\n", far_id, err);
 			return err;
-		} else {
-			netdev_dbg(dev, "5G GTP update FAR id[%d]", far_id);
-		}
+		} 
+        netdev_dbg(dev, "5G GTP update FAR id[%d] flag[%d]", far_id, flag);
 
         // Send GTP-U End marker to gNB
         if (flag) {
@@ -2738,11 +2734,14 @@ static int gtp5g_gnl_add_far(struct gtp5g_dev *gtp, struct genl_info *info)
     if (err < 0) {
         netdev_dbg(dev, "5G GTP add FAR id[%d] fail", far_id);
         far_context_delete(far);
-    } else {
-        hlist_add_head_rcu(&far->hlist_id, 
-            &gtp->far_id_hash[u32_hashfn(far_id) % gtp->hash_size]);
-        netdev_dbg(dev, "5G GTP add FAR id[%d]", far_id);
-    }
+		goto out;
+    } 
+
+	hlist_add_head_rcu(&far->hlist_id, 
+        &gtp->far_id_hash[u32_hashfn(far_id) % gtp->hash_size]);
+	netdev_dbg(dev, "5G GTP add FAR id[%d]", far_id);
+
+out:
     return err;
 }
 
