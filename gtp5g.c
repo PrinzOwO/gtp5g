@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* GTP5G according to 3GPP TS 29.281 / 3GPP TS 29.244
  *
- * Author: Yao-Wen Chang <yaowenowo@gmail.com>
- *		Muthuraman Elangovan <muthuramane.cs03g@g2.nctu.edu.tw>
+ * Author: Muthuraman Elangovan <muthuramane.cs03g@g2.nctu.edu.tw>
+ *  	Yao-Wen Chang <yaowenowo@gmail.com>
  *	   	Chi Chang <edingroot@gmail.com>
  */
 
@@ -436,14 +436,9 @@ static int far_fill(struct gtp5g_far *far, struct gtp5g_dev *gtp, struct genl_in
 						epkt_info->teid = old_teid;
 						epkt_info->peer_addr = old_peer_addr;
 						epkt_info->gtph_port = old_port;
-						printk("%s:%d Flag set, OLD: teid(%#x) peer(%#x) port(%#x)\n", __func__, __LINE__,
-							epkt_info->teid, epkt_info->peer_addr, epkt_info->gtph_port);
                     }
                 }
             }
-			printk("%s:%d Teid(%#x) Peer(%#x) Port(%#x)\n", __func__, __LINE__,
-				ntohl(hdr_creation->teid), ntohl(hdr_creation->peer_addr_ipv4.s_addr), 
-				ntohs(hdr_creation->port));
         }
 
         if (fwd_param_attrs[GTP5G_FORWARDING_PARAMETER_FORWARDING_POLICY]) {
@@ -475,8 +470,7 @@ static int far_fill(struct gtp5g_far *far, struct gtp5g_dev *gtp, struct genl_in
         if (*pdr->far_id == far->id) {
             if (flag != NULL && *flag == 1) {
                 epkt_info->role_addr = pdr->role_addr_ipv4.s_addr;
-				printk("%s:%d Flag is set, role_addr %#x\n", __func__, __LINE__,
-					epkt_info->role_addr);
+                pr_info("%s:%d Flag is set, role_addr %#x\n", __func__, __LINE__, epkt_info->role_addr);
             }
             pdr->far = far;
             if (unix_sock_client_update(pdr) < 0)
@@ -620,8 +614,6 @@ static int pdr_fill(struct gtp5g_pdr *pdr, struct gtp5g_dev *gtp, struct genl_in
     int i;
     char *str;
 
-    printk("%s:%d Entry\n", __func__, __LINE__);
-
     if (!pdr) {
         printk_ratelimited("%s:%d PDR is NULL\n", __func__, __LINE__);
 		return -EINVAL;
@@ -647,7 +639,6 @@ static int pdr_fill(struct gtp5g_pdr *pdr, struct gtp5g_dev *gtp, struct genl_in
     /* Not in 3GPP spec, just used for routing */
     if (info->attrs[GTP5G_PDR_ROLE_ADDR_IPV4]) {
         pdr->role_addr_ipv4.s_addr = nla_get_u32(info->attrs[GTP5G_PDR_ROLE_ADDR_IPV4]);
-		printk("%s:%d PDR Role addr: %#x\n", __func__, __LINE__, pdr->role_addr_ipv4.s_addr);
 	}
 
     /* Not in 3GPP spec, just used for buffering */
@@ -719,7 +710,6 @@ static int pdr_fill(struct gtp5g_pdr *pdr, struct gtp5g_dev *gtp, struct genl_in
 				printk_ratelimited("%s:%d Failed to allocate PDI\n", __func__, __LINE__);
                 return -ENOMEM;
 			}
-			printk("%s:%d PDI created\n", __func__, __LINE__);	
         }
         pdi = pdr->pdi;
 
@@ -754,14 +744,10 @@ static int pdr_fill(struct gtp5g_pdr *pdr, struct gtp5g_dev *gtp, struct genl_in
 					printk_ratelimited("%s:%d Failed to allocate UE IPv4 address\n", __func__, __LINE__);
                     return -ENOMEM;
 				}
-			    printk("%s:%d PDI Fteid created\n", __func__, __LINE__);	
             } 
 			f_teid = pdi->f_teid;
 			f_teid->teid = htonl(nla_get_u32(f_teid_attrs[GTP5G_F_TEID_I_TEID]));
 			f_teid->gtpu_addr_ipv4.s_addr = nla_get_be32(f_teid_attrs[GTP5G_F_TEID_GTPU_ADDR_IPV4]);
-			printk("%s:%d PDI Fteid info filled\n", __func__, __LINE__);	
-			printk("%s:%d teid(%#x) gtpu(%#x)\n", __func__, __LINE__,
-				ntohl(f_teid->teid), ntohl(f_teid->gtpu_addr_ipv4.s_addr));	
         }
 
         /* Parse SDF Filter in PDI */
@@ -771,7 +757,6 @@ static int pdr_fill(struct gtp5g_pdr *pdr, struct gtp5g_dev *gtp, struct genl_in
 							pdi_attrs[GTP5G_PDI_SDF_FILTER], 
 							NULL, 
 							NULL)) {
-			printk("%s:%d SDF Info\n", __func__, __LINE__);	
             if (!pdi->sdf) {
                 pdi->sdf = kzalloc(sizeof(*pdi->sdf), GFP_ATOMIC);
                 if (!pdi->sdf) {
@@ -1152,8 +1137,6 @@ static struct rtable *ip4_find_route_simple(struct sk_buff *skb,
 {
 	struct rtable *rt;
 
-	printk("%s:%d Entry\n", __func__, __LINE__);
-
 	memset(fl4, 0, sizeof(*fl4));
 	fl4->flowi4_oif = sk->sk_bound_dev_if;
 	fl4->daddr	   = daddr;
@@ -1233,8 +1216,10 @@ static void gtp5g_fwd_emark_skb_ipv4(struct sk_buff *skb,
                         epkt_info->role_addr /* Src Addr */ ,
 						epkt_info->peer_addr /* Dst Addr*/, 
 						&fl4);
-	if (IS_ERR(rt))
+	if (IS_ERR(rt)) {
+        netdev_dbg(dev, "Failed to send GTP-U end-marker due to routing\n");
 		return;
+	}
 
 	udp_tunnel_xmit_skb(rt, 
 					epkt_info->sk, 
@@ -1248,7 +1233,6 @@ static void gtp5g_fwd_emark_skb_ipv4(struct sk_buff *skb,
 					epkt_info->gtph_port,
 					true, 
 					true);
-	printk("%s:%d Send the GTP-U EndMarker\n", __func__, __LINE__);
 }
 
 static int gtp5g_fwd_skb_ipv4(struct sk_buff *skb, 
@@ -2300,45 +2284,47 @@ static int gtp5g_gnl_add_pdr(struct gtp5g_dev *gtp, struct genl_info *info)
     pdr = pdr_find_by_id(gtp, pdr_id);
     if (pdr) {
         if (info->nlhdr->nlmsg_flags & NLM_F_EXCL) {
-            printk("%s:%d Failed the flag NLM_F_EXCL set\n", __func__, __LINE__);
-            return -EEXIST;
+            netdev_dbg(dev, "PDR-Add: Failed NLM_F_EXCL is set\n");
+            err = -EEXIST;
+            goto out;
 		} else if (!(info->nlhdr->nlmsg_flags & NLM_F_REPLACE)) {
-            printk("%s:%d Failed the flag NLM_F_REPLACE is not set\n", __func__, __LINE__);
-            return -EOPNOTSUPP;
+            netdev_dbg(dev, "PDR-Add: Failed NLM_F_REPLACE is not set\n");
+            err = -EOPNOTSUPP;
+            goto out;
         }
 
         err = pdr_fill(pdr, gtp, info);
         if (err < 0) {
-            netdev_dbg(dev, "5G GTP update PDR id(%u) fail\n", pdr_id);
+            netdev_dbg(dev, "PDR-Add:  update id(%u) fail\n", pdr_id);
             pdr_context_delete(pdr);
-        } else {
-            netdev_dbg(dev, "5G GTP update PDR id(%u)\n", pdr_id);
-        }
-
+        } 
         return err;
     }
 
     if (info->nlhdr->nlmsg_flags & NLM_F_REPLACE) {
-        netdev_dbg(dev, "Failed nlmsg set to NLM_F_REPLACE\n");
-        return -ENOENT;
+        netdev_dbg(dev, "PDR-Add: (New)Failed NLM_F_REPLACE is set\n");
+        err = -ENOENT;
+        goto out;
 	}
 
     if (info->nlhdr->nlmsg_flags & NLM_F_APPEND) {
-        netdev_dbg(dev, "Failed nlmsg set to NLM_F_APPEND\n");
-        return -EOPNOTSUPP;
+        netdev_dbg(dev, "PDR-Add: (New)Failed NLM_F_APPEND is set\n");
+        err = -EOPNOTSUPP;
+        goto out;
 	}
 
     // Check only at the creation part
     if (!info->attrs[GTP5G_PDR_PRECEDENCE]) {
-        netdev_dbg(dev, "PDR precedence is not present\n");
-        return -EINVAL;
+        netdev_dbg(dev, "PDR-Add: Precedence is not given\n");
+        err = -EINVAL;
+        goto out;
     }
 
     pdr = kzalloc(sizeof(*pdr), GFP_ATOMIC);
     if (!pdr) {
-        printk_ratelimited("%s:%d Failed to allocate PDR memory\n", 
-            __func__, __LINE__);
-        return -ENOMEM;
+        netdev_dbg(dev, "PDR-Add: Failed to allocate memory\n");
+        err = -ENOMEM;
+        goto out;
     }
 
     sock_hold(gtp->sk1u);
@@ -2347,14 +2333,16 @@ static int gtp5g_gnl_add_pdr(struct gtp5g_dev *gtp, struct genl_info *info)
 
     err = pdr_fill(pdr, gtp, info);
     if (err < 0) {
-        pr_warn("5G GTP add PDR id(%u) fail: %d\n", pdr_id, err);
+        netdev_dbg(dev, "PDR-Add: id(%u) fail: %d\n", pdr_id, err);
         pdr_context_delete(pdr);
-    } else {
-        hlist_add_head_rcu(&pdr->hlist_id, 
-							&gtp->pdr_id_hash[u32_hashfn(pdr_id) % gtp->hash_size]);
-        netdev_dbg(dev, "5G GTP add PDR id[%d]\n", pdr_id);
-    }
+        goto out;
+    } 
+    
+     hlist_add_head_rcu(&pdr->hlist_id, 
+         &gtp->pdr_id_hash[u32_hashfn(pdr_id) % gtp->hash_size]);
+     netdev_dbg(dev, "PDR-Add: id[%d] success\n", pdr_id);
 
+out:
     return err;
 }
 
@@ -2365,7 +2353,7 @@ static int gtp5g_genl_add_pdr(struct sk_buff *skb, struct genl_info *info)
 
     if (!info->attrs[GTP5G_PDR_ID] ||
         !info->attrs[GTP5G_LINK]) {
-		printk_ratelimited("%s:%d PDR_ID or LINK value is not exists\n", __func__,
+		printk_ratelimited("%s:%d PDR-Add: ID or LINK value is not exists\n", __func__,
 				__LINE__);
         return -EINVAL;
 	}
@@ -2375,7 +2363,7 @@ static int gtp5g_genl_add_pdr(struct sk_buff *skb, struct genl_info *info)
 
     gtp = gtp5g_find_dev(sock_net(skb->sk), info->attrs);
     if (!gtp) {
-		printk_ratelimited("%s:%d Can't find the gtp5g_dev\n", __func__,__LINE__);
+		printk_ratelimited("%s:%d PDR-Add: Can't find the gtp5g_dev\n", __func__,__LINE__);
         err = -ENODEV;
         goto unlock;
     }
@@ -2396,7 +2384,7 @@ static int gtp5g_genl_del_pdr(struct sk_buff *skb, struct genl_info *info)
 
     if (!info->attrs[GTP5G_PDR_ID] ||
         !info->attrs[GTP5G_LINK]) {
-		printk_ratelimited("%s:%d PDR_ID or LINK is not present\n",
+		printk_ratelimited("%s:%d PDR-Del: ID or LINK is not present\n",
 				__func__, __LINE__);
         return -EINVAL;
 	}
@@ -2407,11 +2395,13 @@ static int gtp5g_genl_del_pdr(struct sk_buff *skb, struct genl_info *info)
 
     pdr = gtp5g_find_pdr(sock_net(skb->sk), info->attrs);
     if (IS_ERR(pdr)) {
+		printk_ratelimited("%s:%d PDR-Del: failed to find id(%#x)\n",
+				__func__, __LINE__, id);
         err = PTR_ERR(pdr);
         goto unlock;
     }
 
-    netdev_dbg(pdr->dev, "5G GTP-U : delete PDR id[%d]\n", id);
+    netdev_dbg(pdr->dev, "PDR-Del: id[%d] success\n", id);
     pdr_context_delete(pdr);
 
 unlock:
@@ -2680,28 +2670,26 @@ static int gtp5g_gnl_add_far(struct gtp5g_dev *gtp, struct genl_info *info)
     u32 far_id;
     u8  flag;
 
-    printk("%s:%d Entry\n", __func__, __LINE__);
-
     far_id = nla_get_u32(info->attrs[GTP5G_FAR_ID]);
     far = far_find_by_id(gtp, far_id);
     if (far) {
     	if (info->nlhdr->nlmsg_flags & NLM_F_EXCL) {
-			printk("%s:%d Exit\n", __func__, __LINE__);
-            return -EEXIST;
+			netdev_dbg(dev, "FAR-Add: Failed NLM_F_EXCL is set\n");
+            err = -EEXIST;
+            goto out;
   		} else if (!(info->nlhdr->nlmsg_flags & NLM_F_REPLACE)) {
-			printk("%s:%d Exit\n", __func__, __LINE__);
-            return -EOPNOTSUPP;
+			netdev_dbg(dev, "FAR-Add: Failed NLM_F_REPLACE is not set\n");
+            err = -EOPNOTSUPP;
+            goto out;
 		}
 
 		flag = 0;
 		err = far_fill(far, gtp, info, &flag, &epkt_info);
 		if (err < 0) {
 			far_context_delete(far);
-			pr_warn("5G GTP update FAR id[%d] fail: %d\n", far_id, err);
-			printk("%s:%d Exit\n", __func__, __LINE__);
-			return err;
+			pr_warn("FAR-Update: id[%d] fail: %d\n", far_id, err);
+            goto out;
 		} 
-        printk("%s:%d 5G GTP update FAR id[%d] flag[%d]\n", __func__, __LINE__, far_id, flag);
 
         // Send GTP-U End marker to gNB
         if (flag) {
@@ -2710,54 +2698,56 @@ static int gtp5g_gnl_add_far(struct gtp5g_dev *gtp, struct genl_info *info)
              * */
             struct sk_buff *skb = __netdev_alloc_skb(dev, 52, GFP_KERNEL);
             if (!skb) {
-                printk("%s:%d Failled to allocate buffer\n", __func__, __LINE__);
-                return err;
+                pr_warn("FAR-Add: Failled to allocate skb with a size 52\n");
+                err = 0;
+				goto out;
             }
-            printk("%s:%d Going to send GTP-U EndMarker to gNB", __func__, __LINE__);
             skb_reserve(skb, 2);
             skb->protocol = eth_type_trans(skb, dev);
             gtp5g_fwd_emark_skb_ipv4(skb, dev, &epkt_info);
        }
-		printk("%s:%d Exit\n", __func__, __LINE__);
-	   return err;
+	   return 0;
     }
 
     if (info->nlhdr->nlmsg_flags & NLM_F_REPLACE) {
-		printk("%s:%d Exit\n", __func__, __LINE__);
-        return -ENOENT;
+		netdev_dbg(dev, "FAR-Add: Failed NLM_F_REPLACE is set\n");
+        err = -ENOENT;
+        goto out;
 	}
 
     if (info->nlhdr->nlmsg_flags & NLM_F_APPEND) {
-		printk("%s:%d Exit\n", __func__, __LINE__);
-        return -EOPNOTSUPP;
+		netdev_dbg(dev, "FAR-Add: Failed NLM_F_APPEND is set\n");
+        err = -EOPNOTSUPP;
+        goto out;
 	}
 
 	// Check only at the creation part
 	if (!info->attrs[GTP5G_FAR_APPLY_ACTION]) {
-		printk("%s:%d Exit\n", __func__, __LINE__);
-	    return -EINVAL;
+		netdev_dbg(dev, "FAR-Add: Failed apply action is not given\n");
+	    err = -EINVAL;
+        goto out;
 	}
 
 	far = kzalloc(sizeof(*far), GFP_ATOMIC);
 	if (!far) {
-        printk_ratelimited("%s:%d Failed to allocate FAR\n", __func__, __LINE__);
-        return -ENOMEM;
+        netdev_dbg(dev, "FAR-Add: Failed to allocate memory\n");
+        err = -ENOMEM;
+        goto out;
     }
     far->dev = gtp->dev;
 
     err = far_fill(far, gtp, info, NULL, NULL);
     if (err < 0) {
-        netdev_dbg(dev, "5G GTP add FAR id[%d] fail", far_id);
+        netdev_dbg(dev, "FAR-Add: id[%d] fail", far_id);
         far_context_delete(far);
 		goto out;
     } 
 
 	hlist_add_head_rcu(&far->hlist_id, 
         &gtp->far_id_hash[u32_hashfn(far_id) % gtp->hash_size]);
-	netdev_dbg(dev, "5G GTP add FAR id[%d]", far_id);
+	netdev_dbg(dev, "FAR-Add: id[%d] success", far_id);
 
 out:
-	printk("%s:%d Exit\n", __func__, __LINE__);
     return err;
 }
 
@@ -3609,7 +3599,7 @@ static int __init gtp5g_init(void)
 {
     int err;
 
-    printk("%s:%d Gtp5g Module initialization Ver: %s\n",
+    pr_info("%s:%d Gtp5g Module initialization Ver: %s\n",
        __func__, __LINE__, DRV_VERSION);
 
     get_random_bytes(&gtp5g_h_initval, sizeof(gtp5g_h_initval));
