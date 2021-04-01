@@ -436,7 +436,7 @@ static int far_fill(struct gtp5g_far *far, struct gtp5g_dev *gtp, struct genl_in
 						epkt_info->teid = old_teid;
 						epkt_info->peer_addr = old_peer_addr;
 						epkt_info->gtph_port = old_port;
-						printk("%s:%d Flag set, teid(%#x) peer(%#x) port(#x)\n", __func__, __LINE__,
+						printk("%s:%d Flag set, teid(%#x) peer(%#x) port(%#x)\n", __func__, __LINE__,
 							epkt_info->teid, epkt_info->peer_addr, epkt_info->gtph_port);
                     }
                 }
