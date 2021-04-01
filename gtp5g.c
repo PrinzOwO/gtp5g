@@ -34,7 +34,7 @@
 
 #include "gtp5g.h"
 
-#define DRV_VERSION "1.0.1-f0"
+#define DRV_VERSION "1.0.1-f1"
 
 struct local_f_teid {
     u32     teid;                       // i_teid
@@ -432,11 +432,12 @@ static int far_fill(struct gtp5g_far *far, struct gtp5g_dev *gtp, struct genl_in
                 if ((flag != NULL && epkt_info != NULL)) {
                     if (((old_teid & hdr_creation->teid) != 0 && ((old_peer_addr & hdr_creation->peer_addr_ipv4.s_addr) != 0)) &&
                         ((old_teid != hdr_creation->teid ) || (old_peer_addr != hdr_creation->peer_addr_ipv4.s_addr))) {
-						printk("%s:%d Flag set as 1\n", __func__, __LINE__);
 						*flag = 1;
 						epkt_info->teid = old_teid;
 						epkt_info->peer_addr = old_peer_addr;
 						epkt_info->gtph_port = old_port;
+						printk("%s:%d Flag set, teid(%#x) peer(%#x) port(#x)\n", __func__, __LINE__,
+							epkt_info->teid, epkt_info->peer_addr, epkt_info->gtph_port);
                     }
                 }
             }
@@ -472,9 +473,11 @@ static int far_fill(struct gtp5g_far *far, struct gtp5g_dev *gtp, struct genl_in
             if (flag != NULL && epkt_info != NULL && *flag) {
                 if (pdr->pdi && pdr->pdi->f_teid) {
                     // Get the UPF and routing ip address
+					printk("%s:%d Get the upf routing info\n", __func__, __LINE__);
                     epkt_info->local_addr = pdr->pdi->f_teid->gtpu_addr_ipv4.s_addr;
                     epkt_info->route_addr = pdr->role_addr_ipv4.s_addr;
                 } else {
+					printk("%s:%d Reset the flag of end-marker\n", __func__, __LINE__);
                     *flag = 0;
                 }
             }
@@ -2693,7 +2696,7 @@ static int gtp5g_gnl_add_far(struct gtp5g_dev *gtp, struct genl_info *info)
 			pr_warn("5G GTP update FAR id[%d] fail: %d\n", far_id, err);
 			return err;
 		} 
-        netdev_dbg(dev, "5G GTP update FAR id[%d] flag[%d]", far_id, flag);
+        printk("%s:%d 5G GTP update FAR id[%d] flag[%d]", __func__, __LINE__, far_id, flag);
 
         // Send GTP-U End marker to gNB
         if (flag) {
