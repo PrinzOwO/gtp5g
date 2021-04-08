@@ -21,6 +21,7 @@
 #include <linux/gtp.h>
 #include <linux/range.h>
 #include <linux/un.h>
+#include <linux/proc_fs.h>
 
 #include <net/net_namespace.h>
 #include <net/protocol.h>
@@ -34,10 +35,9 @@
 
 #include "gtp5g.h"
 
-#define DRV_VERSION "1.0.1-f1"
+#define DRV_VERSION "1.0.2"
 
 int dbg_trace_lvl = 1;
-
 
 #define DBG(level, dev, fmt, args...) do { 		\
 	if (level <= dbg_trace_lvl) { 			    \
@@ -48,7 +48,7 @@ int dbg_trace_lvl = 1;
     } \
 } while(0)
 
-#define GTP5G_DBG(dev, fmt, args...) DBG(0, dev, fmt, ##args)
+#define GTP5G_LOG(dev, fmt, args...) DBG(0, dev, fmt, ##args)
 #define GTP5G_ERR(dev, fmt, args...) DBG(1, dev, fmt, ##args)
 #define GTP5G_WAR(dev, fmt, args...) DBG(2, dev, fmt, ##args)
 #define GTP5G_INF(dev, fmt, args...) DBG(3, dev, fmt, ##args)
@@ -2434,7 +2434,7 @@ static int gtp5g_genl_del_pdr(struct sk_buff *skb, struct genl_info *info)
         goto unlock;
     }
 
-    GTP5G_DBG(pdr->dev, "PDR-Del: id[%d] success\n", id);
+    GTP5G_LOG(pdr->dev, "PDR-Del: id[%d] success\n", id);
     pdr_context_delete(pdr);
 
 unlock:
@@ -2730,7 +2730,7 @@ static int gtp5g_gnl_add_far(struct gtp5g_dev *gtp, struct genl_info *info)
             skb->protocol = eth_type_trans(skb, dev);
             gtp5g_fwd_emark_skb_ipv4(skb, dev, &epkt_info);
        }
-	   GTP5G_DBG(dev, "FAR-Add: update id[%d] success\n", far_id);
+	   GTP5G_LOG(dev, "FAR-Add: update id[%d] success\n", far_id);
 	   return 0;
     }
 
@@ -2770,7 +2770,7 @@ static int gtp5g_gnl_add_far(struct gtp5g_dev *gtp, struct genl_info *info)
 
 	hlist_add_head_rcu(&far->hlist_id, 
         &gtp->far_id_hash[u32_hashfn(far_id) % gtp->hash_size]);
-	GTP5G_DBG(dev, "FAR-Add: id[%d] success\n", far_id);
+	GTP5G_LOG(dev, "FAR-Add: id[%d] success\n", far_id);
 
 out:
     return err;
@@ -3162,7 +3162,7 @@ static int gtp5g_gnl_add_qer(struct gtp5g_dev *gtp, struct genl_info *info)
 			GTP5G_ERR(dev, "QER-Add: update QER_ID(%u) err(%u)\n", qer_id, err);
 			return err;
         } 
-		GTP5G_DBG(dev, "QER-Add: updated QER_ID(%u)\n", qer_id);
+		GTP5G_LOG(dev, "QER-Add: updated QER_ID(%u)\n", qer_id);
         return err;
     }
 
@@ -3249,7 +3249,7 @@ static int gtp5g_genl_del_qer(struct sk_buff *skb, struct genl_info *info)
         goto unlock;
     }
 
-    GTP5G_DBG(qer->dev, "QER-Del: QER id(%u) success\n", id);
+    GTP5G_LOG(qer->dev, "QER-Del: QER id(%u) success\n", id);
     qer_context_delete(qer);
 unlock:
     rcu_read_unlock();
@@ -3614,11 +3614,82 @@ static struct pernet_operations gtp5g_net_ops = {
     .size    = sizeof(struct gtp5g_net),
 };
 
+struct proc_dir_entry *proc_gtp5g = NULL;
+struct proc_dir_entry *proc_gtp5g_dbg = NULL;
+
+int gtp5g_atoi(char *str, int *result)
+{
+    int n = 0;
+    char *p = str;
+
+    *result = 0;
+    while (*p >= '0' && *p <= '9')
+    {
+        n++;
+        *result *= 10;
+        *result += *p - '0';
+        p++;
+    }
+
+    if (*p++ == '\n')
+        n++;
+
+    return n;
+}
+
+static int gtp5g_dbg_read(struct seq_file *s, void *v) 
+{
+	seq_printf(s, "gtp5g kerenl debug level range: 0~4\n");
+	seq_printf(s, "\t 0 -> Logging\n");
+	seq_printf(s, "\t 1 -> Error(default)\n");
+	seq_printf(s, "\t 2 -> Warning\n");
+	seq_printf(s, "\t 3 -> Information\n");
+	seq_printf(s, "\t 4 -> Trace\n");
+	seq_printf(s, "Current: %d\n", dbg_trace_lvl);
+	return 0;
+}
+
+static ssize_t proc_dbg_write(struct file *filp, const char __user *buff,
+            size_t len, loff_t *dptr) 
+{
+	char str_in[8];
+	unsigned long str_len = min(len, sizeof(str_in) - 1);
+	int dbg;
+
+	if (copy_from_user(str_in, buff, str_len)) 
+		return -1;
+
+	str_in[str_len] = '\0';
+
+	gtp5g_atoi(str_in, &dbg);
+
+	if (dbg >= 0 && dbg <= 4) {
+		dbg_trace_lvl = dbg;
+		return str_len;
+	}
+	
+	return -1;
+}
+
+static int proc_dbg_read(struct inode *inode, struct file *file)
+{
+    return single_open(file, gtp5g_dbg_read, NULL);
+}
+
+static const struct file_operations proc_gtp5g_dbg_ops = {
+    .owner      = THIS_MODULE,
+    .open       = proc_dbg_read,
+    .read       = seq_read,
+    .write      = proc_dbg_write,
+    .llseek     = seq_lseek,
+    .release    = single_release,
+};
+
 static int __init gtp5g_init(void)
 {
     int err;
 
-    GTP5G_DBG(NULL, "Gtp5g Module initialization Ver: %s\n", DRV_VERSION);
+    GTP5G_LOG(NULL, "Gtp5g Module initialization Ver: %s\n", DRV_VERSION);
 
     get_random_bytes(&gtp5g_h_initval, sizeof(gtp5g_h_initval));
 
@@ -3640,11 +3711,27 @@ static int __init gtp5g_init(void)
         goto unreg_genl_family;
     }
 
-    GTP5G_DBG(NULL, "5G GTP module loaded (pdr ctx size %zd bytes)\n",
+	proc_gtp5g = proc_mkdir("gtp5g", NULL);
+    if (!proc_gtp5g) {
+        GTP5G_ERR(NULL, "Failed to create /proc/gtp5g\n");
+        goto unreg_pernet;
+	}
+
+    proc_gtp5g_dbg = proc_create("dbg", (S_IFREG | S_IRUGO | S_IWUGO), proc_gtp5g, &proc_gtp5g_dbg_ops);
+    if (!proc_gtp5g_dbg) {
+        GTP5G_ERR(NULL, "Failed to create /proc/gtp5g/dbg\n");
+        goto remove_gtp5g_proc;
+	}
+
+    GTP5G_LOG(NULL, "5G GTP module loaded (pdr ctx size %zd bytes)\n",
         sizeof(struct gtp5g_pdr));
 
     return 0;
 
+remove_gtp5g_proc:
+	remove_proc_entry("gtp5g", NULL);
+unreg_pernet:
+    unregister_pernet_subsys(&gtp5g_net_ops);
 unreg_genl_family:
     genl_unregister_family(&gtp5g_genl_family);
 unreg_rtnl_link:
@@ -3660,7 +3747,10 @@ static void __exit gtp5g_fini(void)
     rtnl_link_unregister(&gtp5g_link_ops);
     unregister_pernet_subsys(&gtp5g_net_ops);
 
-    GTP5G_DBG(NULL, "5G GTP module unloaded\n");
+	remove_proc_entry("dbg", proc_gtp5g);
+	remove_proc_entry("gtp5g", NULL);
+
+    GTP5G_LOG(NULL, "5G GTP module unloaded\n");
 }
 module_exit(gtp5g_fini);
 
