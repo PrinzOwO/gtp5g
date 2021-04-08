@@ -500,6 +500,7 @@ static int far_fill(struct gtp5g_far *far, struct gtp5g_dev *gtp, struct genl_in
         if (*pdr->far_id == far->id) {
             if (flag != NULL && *flag == 1) {
                 epkt_info->role_addr = pdr->role_addr_ipv4.s_addr;
+                epkt_info->sk = pdr->sk;
                 GTP5G_INF(NULL, "Flag is set, role_addr %#x\n", epkt_info->role_addr);
             }
             pdr->far = far;
