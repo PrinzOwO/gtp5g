@@ -5,8 +5,9 @@ INCLUDE_DIR = /usr/src/linux-headers-$(KVERSION)/
 CONFIG_MODULE_SIG=n
 MODULE_NAME = gtp5g
 
-CFLAGS += -ggdb
+MY_CFLAGS += -g -DDEBUG
 EXTRA_CFLAGS += -Wno-misleading-indentation -Wuninitialized
+CC += ${MY_CFLAGS}
 
 obj-m := $(MODULE_NAME).o
 
