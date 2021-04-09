@@ -3676,6 +3676,15 @@ static int proc_dbg_read(struct inode *inode, struct file *file)
     return single_open(file, gtp5g_dbg_read, NULL);
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
+static const struct proc_ops proc_gtp5g_dbg_ops = {
+	.proc_open	= proc_dbg_read,
+	.proc_read	= seq_read,
+	.proc_write	= proc_dbg_write,
+	.proc_lseek	= seq_lseek,
+	.proc_release = single_release,
+};
+#else
 static const struct file_operations proc_gtp5g_dbg_ops = {
     .owner      = THIS_MODULE,
     .open       = proc_dbg_read,
@@ -3684,6 +3693,7 @@ static const struct file_operations proc_gtp5g_dbg_ops = {
     .llseek     = seq_lseek,
     .release    = single_release,
 };
+#endif
 
 static int __init gtp5g_init(void)
 {
