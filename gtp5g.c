@@ -3682,7 +3682,7 @@ static const struct proc_ops proc_gtp5g_dbg_ops = {
 	.proc_read	= seq_read,
 	.proc_write	= proc_dbg_write,
 	.proc_lseek	= seq_lseek,
-	.proc_releas = single_release,
+	.proc_release = single_release,
 };
 #else
 static const struct file_operations proc_gtp5g_dbg_ops = {
