@@ -1310,6 +1310,8 @@ static int gtp5g_buf_skb_ipv4(struct sk_buff *skb, struct net_device *dev,
     // TODO: handle nonlinear part
     if (unix_sock_send(pdr, skb->data, skb_headlen(skb)) < 0)
         rt = -EBADMSG;
+    else
+        dev_kfree_skb(skb);
 
     return rt;
 }
