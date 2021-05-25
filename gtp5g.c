@@ -1232,7 +1232,7 @@ static int gtp5g_drop_skb_ipv4(struct sk_buff *skb, struct net_device *dev)
 {
     dev->stats.tx_dropped++;
     dev_kfree_skb(skb);
-    return 0;
+    return FAR_ACTION_DROP;
 }
 
 static void gtp5g_fwd_emark_skb_ipv4(struct sk_buff *skb,
@@ -1317,14 +1317,12 @@ err:
 static int gtp5g_buf_skb_ipv4(struct sk_buff *skb, struct net_device *dev,
                                 struct gtp5g_pdr *pdr)
 {
-    int rt = 0;
     // TODO: handle nonlinear part
     if (unix_sock_send(pdr, skb->data, skb_headlen(skb)) < 0)
-        rt = -EBADMSG;
-    else
-        dev_kfree_skb(skb);
+        GTP5G_ERR(dev, "Failed to send skb to unix domain socket PDR(%u)", pdr->id);
 
-    return rt;
+    dev_kfree_skb(skb);
+    return FAR_ACTION_BUFF;
 }
 
 static int gtp5g_handle_skb_ipv4(struct sk_buff *skb, struct net_device *dev,
@@ -1366,34 +1364,32 @@ static int gtp5g_handle_skb_ipv4(struct sk_buff *skb, struct net_device *dev,
         // The NOCP flag may only be set if the BUFF flag is set.
         // The DUPL flag may be set with any of the DROP, FORW, BUFF and NOCP flags.
         switch (far->action & FAR_ACTION_MASK) {
-            case FAR_ACTION_DROP:
-                return gtp5g_drop_skb_ipv4(skb, dev);
-            case FAR_ACTION_FORW:
-                return gtp5g_fwd_skb_ipv4(skb, dev, pktinfo, pdr);
-            case FAR_ACTION_BUFF:
-                return gtp5g_buf_skb_ipv4(skb, dev, pdr);
-            default:
-                GTP5G_ERR(dev, "Unspec apply action[%u] in FAR[%u] and related to PDR[%u]",
-                    far->action, far->id, pdr->id);
+        case FAR_ACTION_DROP:
+            return gtp5g_drop_skb_ipv4(skb, dev);
+        case FAR_ACTION_FORW:
+            return gtp5g_fwd_skb_ipv4(skb, dev, pktinfo, pdr);
+        case FAR_ACTION_BUFF:
+            return gtp5g_buf_skb_ipv4(skb, dev, pdr);
+        default:
+            GTP5G_ERR(dev, "Unspec apply action[%u] in FAR[%u] and related to PDR[%u]",
+                far->action, far->id, pdr->id);
         }
     }
 
     return -ENOENT;
 }
 
-static void gtp5g_xmit_skb_ipv4(struct sk_buff *skb, struct gtp5g_pktinfo *pktinfo, u32 action)
+static void gtp5g_xmit_skb_ipv4(struct sk_buff *skb, struct gtp5g_pktinfo *pktinfo)
 {
-    if (action & FAR_ACTION_FORW) {
-        //GTP5G_ERR(pktinfo->dev, "gtp -> IP src: %pI4 dst: %pI4\n",
-        //           &pktinfo->iph->saddr, &pktinfo->iph->daddr);
-        udp_tunnel_xmit_skb(pktinfo->rt, pktinfo->sk, skb,
-                            pktinfo->fl4.saddr, pktinfo->fl4.daddr,
-                            pktinfo->iph->tos,
-                            ip4_dst_hoplimit(&pktinfo->rt->dst),
-                            0,
-                            pktinfo->gtph_port, pktinfo->gtph_port,
-                            true, true);
-    }
+    //GTP5G_ERR(pktinfo->dev, "gtp -> IP src: %pI4 dst: %pI4\n",
+    //           &pktinfo->iph->saddr, &pktinfo->iph->daddr);
+    udp_tunnel_xmit_skb(pktinfo->rt, pktinfo->sk, skb,
+                        pktinfo->fl4.saddr, pktinfo->fl4.daddr,
+                        pktinfo->iph->tos,
+                        ip4_dst_hoplimit(&pktinfo->rt->dst),
+                        0,
+                        pktinfo->gtph_port, pktinfo->gtph_port,
+                        true, true);
 }
 
 /**
@@ -1429,11 +1425,8 @@ static netdev_tx_t gtp5g_dev_xmit(struct sk_buff *skb, struct net_device *dev)
     if (ret < 0)
         goto tx_err;
 
-    switch (proto) {
-    case ETH_P_IP:
-        gtp5g_xmit_skb_ipv4(skb, &pktinfo, ret);
-        break;
-    }
+    if (ret == FAR_ACTION_FORW)
+        gtp5g_xmit_skb_ipv4(skb, &pktinfo);
 
     return NETDEV_TX_OK;
 
@@ -1853,7 +1846,6 @@ static int gtp5g_drop_skb_encap(struct sk_buff *skb, struct net_device *dev)
 {
     dev->stats.tx_dropped++;
     dev_kfree_skb(skb);
-
     return 0;
 }
 
@@ -1931,13 +1923,11 @@ static int gtp5g_fwd_skb_encap(struct sk_buff *skb, struct net_device *dev,
 
 static int gtp5g_buf_skb_encap(struct sk_buff *skb, struct net_device *dev, struct gtp5g_pdr *pdr)
 {
-    int rt = 0;
     if (unix_sock_send(pdr, skb->data, skb_headlen(skb)) < 0)
-        rt = -EBADMSG;
+        GTP5G_ERR(dev, "Failed to send skb to unix domain socket PDR(%u)", pdr->id);
 
     dev_kfree_skb(skb);
-
-    return rt;
+    return 0;
 }
 
 static int gtp5g_rx(struct gtp5g_pdr *pdr, struct sk_buff *skb,
@@ -1965,19 +1955,19 @@ static int gtp5g_rx(struct gtp5g_pdr *pdr, struct sk_buff *skb,
         // The NOCP flag may only be set if the BUFF flag is set.
         // The DUPL flag may be set with any of the DROP, FORW, BUFF and NOCP flags.
         switch(far->action & FAR_ACTION_MASK) {
-            case FAR_ACTION_DROP: 
-                rt = gtp5g_drop_skb_encap(skb, pdr->dev);
-                break;
-            case FAR_ACTION_FORW:
-                rt = gtp5g_fwd_skb_encap(skb, pdr->dev, hdrlen, pdr);
-                break;
-            case FAR_ACTION_BUFF:
-                rt = gtp5g_buf_skb_encap(skb, pdr->dev, pdr);
-                break;
-            default:
-                pr_err("Unspec apply action[%u] in FAR[%u] and related to PDR[%u]",
-                    far->action, far->id, pdr->id);
-                rt = -1;
+        case FAR_ACTION_DROP: 
+            rt = gtp5g_drop_skb_encap(skb, pdr->dev);
+            break;
+        case FAR_ACTION_FORW:
+            rt = gtp5g_fwd_skb_encap(skb, pdr->dev, hdrlen, pdr);
+            break;
+        case FAR_ACTION_BUFF:
+            rt = gtp5g_buf_skb_encap(skb, pdr->dev, pdr);
+            break;
+        default:
+            pr_err("Unspec apply action[%u] in FAR[%u] and related to PDR[%u]",
+                far->action, far->id, pdr->id);
+            rt = -1;
         }
     } else {
         // TODO: this action is not supported
@@ -1988,37 +1978,6 @@ static int gtp5g_rx(struct gtp5g_pdr *pdr, struct sk_buff *skb,
     
     return rt;
 }
-#if 0
-static int get_gtpu_header_len(struct sk_buff *skb, u16 prefix_hdrlen)
-{
-    u8 *gtp1 = (skb->data + prefix_hdrlen);
-	struct gtpv1_hdr *gtp1;
-    u8 *ext_hdr = NULL;
-
-    /** TS 29.281 Chapter 5.1 and Figure 5.1-1
-     * GTP-U header at least 8 byte
-     *
-     * This field shall be present if and only if any one or more of the S, PN and E flags are set.
-     * This field means seq number (2 Octect), N-PDU number (1 Octet) and  Next ext hdr type (1 Octet).
-     */
-    u16 rt_len = 8 + ((*gtp1 & 0x07) ? 4 : 0);
-
-    /** TS 29.281 Chapter 5.2 and Figure 5.2.1-1
-     * The length of the Extension header shall be defined in a variable length of 4 octets,
-     * i.e. m+1 = n*4 octets, where n is a positive integer.
-     */
-    if (*gtp1 & 0x04) {
-        /* ext_hdr will always point to "Next ext hdr type" */
-        while (*(ext_hdr = gtp1 + rt_len - 1)) {
-            rt_len += (*(++ext_hdr)) * 4;
-            if (!pskb_may_pull(skb, rt_len + prefix_hdrlen))
-                return -1;
-        }
-    }
-
-    return rt_len;
-}
-#endif
 
 static int get_gtpu_header_len(struct gtpv1_hdr *gtpv1, u16 prefix_hdrlen)
 {
