@@ -2068,7 +2068,7 @@ static int gtp1u_udp_encap_recv(struct gtp5g_dev *gtp, struct sk_buff *skb)
     pdr = pdr_find_by_gtp1u(gtp, skb, hdrlen, gtpv1->tid);
     if (!pdr) {
         GTP5G_ERR(gtp->dev, "No PDR match this skb : teid[%d]\n", ntohl(gtpv1->tid));
-        return 1;
+        return -1;
     }
 
     return gtp5g_rx(pdr, skb, hdrlen, gtp->role);
@@ -2077,8 +2077,12 @@ static int gtp1u_udp_encap_recv(struct gtp5g_dev *gtp, struct sk_buff *skb)
 /**
  * Entry function for Uplink packets
  *
- * UDP encapsulation receive handler. See net/ipv4/udp.c.
- * Return codes: 0: success, <0: error, >0: pass up to userspace UDP socket.
+ * UDP encapsulation receive handler. See net/ipv4/udp.c
+ * Return codes: 
+ *  =0 : if skb was successfully passed to the encap handler or
+ *       was discarded by it
+ *  >0 : if skb should be passed on to UDP
+ *  <0 : if skb should be resubmitted as proto -N
  */
 static int gtp5g_encap_recv(struct sock *sk, struct sk_buff *skb)
 {
@@ -2098,7 +2102,7 @@ static int gtp5g_encap_recv(struct sock *sk, struct sk_buff *skb)
         ret = -1; // Should not happen
     }
 
-    switch(ret) {
+    switch (ret) {
     case 1:
         GTP5G_ERR(gtp->dev, "Pass up to the process\n");
         break;
