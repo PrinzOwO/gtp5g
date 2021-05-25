@@ -282,10 +282,21 @@ static int unix_sock_send(struct gtp5g_pdr *pdr, void *buf, u32 len)
     msg.msg_controllen = 0;
     msg.msg_flags = 0;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+    oldfs = force_uaccess_begin();
+#else
     oldfs = get_fs();
     set_fs(KERNEL_DS);
+#endif
+
     rt = sock_sendmsg(pdr->sock_for_buf, &msg);
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+    force_uaccess_end(oldfs);
+#else
     set_fs(oldfs);
+#endif	
+
 
     return rt;
 }
