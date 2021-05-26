@@ -209,6 +209,9 @@ struct gtp5g_dev {
     /* IEs list related to PDR */
     struct hlist_head    	*related_far_hash;     // PDR list waiting the FAR to handle
     struct hlist_head    	*related_qer_hash;     // PDR list waiting the QER to handle
+
+    /* Used by proc interface */
+    struct list_head        proc_list;
 };
 
 struct gtp5g_pktinfo {
@@ -240,6 +243,13 @@ static unsigned int gtp5g_net_id __read_mostly;
 
 struct gtp5g_net {
     struct list_head gtp5g_dev_list;
+};
+
+struct list_head proc_gtp5g_dev;
+struct proc_gtp5g_pdr {
+    u16     id;
+    u32     far_id;
+    u32     qer_id;
 };
 
 static struct gtp5g_qer *gtp5g_find_qer(struct net *net, struct nlattr *nla[]);
@@ -2222,6 +2232,7 @@ static int gtp5g_newlink(struct net *src_net, struct net_device *dev,
 
     gn = net_generic(dev_net(dev), gtp5g_net_id);
     list_add_rcu(&gtp->list, &gn->gtp5g_dev_list);
+    list_add_rcu(&gtp->proc_list, &proc_gtp5g_dev);
 
     GTP5G_ERR(dev, "registered new 5G GTP interface\n");
 
@@ -2241,6 +2252,7 @@ static void gtp5g_dellink(struct net_device *dev, struct list_head *head)
 
     gtp5g_hashtable_free(gtp);
     list_del_rcu(&gtp->list);
+    list_del_rcu(&gtp->proc_list);
     unregister_netdevice_queue(dev, head);
 
     GTP5G_ERR(dev, "deregistered 5G GTP interface\n");
@@ -3592,26 +3604,9 @@ static struct pernet_operations gtp5g_net_ops = {
 
 struct proc_dir_entry *proc_gtp5g = NULL;
 struct proc_dir_entry *proc_gtp5g_dbg = NULL;
-
-int gtp5g_atoi(char *str, int *result)
-{
-    int n = 0;
-    char *p = str;
-
-    *result = 0;
-    while (*p >= '0' && *p <= '9')
-    {
-        n++;
-        *result *= 10;
-        *result += *p - '0';
-        p++;
-    }
-
-    if (*p++ == '\n')
-        n++;
-
-    return n;
-}
+struct proc_dir_entry *proc_gtp5g_pdr = NULL;
+struct proc_gtp5g_pdr proc_pdr;
+u16 proc_pdr_id = 0;
 
 static int gtp5g_dbg_read(struct seq_file *s, void *v) 
 {
@@ -3625,31 +3620,107 @@ static int gtp5g_dbg_read(struct seq_file *s, void *v)
 	return 0;
 }
 
-static ssize_t proc_dbg_write(struct file *filp, const char __user *buff,
-            size_t len, loff_t *dptr) 
+static ssize_t proc_dbg_write(struct file *filp, const char __user *buffer,
+    size_t len, loff_t *dptr) 
 {
-	char str_in[8];
-	unsigned long str_len = min(len, sizeof(str_in) - 1);
-	int dbg;
-
-	if (copy_from_user(str_in, buff, str_len)) 
-		return -1;
-
-	str_in[str_len] = '\0';
-
-	gtp5g_atoi(str_in, &dbg);
-
-	if (dbg >= 0 && dbg <= 4) {
-		dbg_trace_lvl = dbg;
-		return str_len;
-	}
-	
-	return -1;
+    char buf[16];
+    unsigned long buf_len = min(len, sizeof(buf) - 1);
+    int dbg;
+    
+    if (copy_from_user(buf, buffer, buf_len)) {
+        GTP5G_ERR(NULL, "Failed to read buffer: %s\n", buffer);
+        goto err;
+    }
+    
+    buf[buf_len] = 0;
+    if (sscanf(buf, "%d", &dbg) != 1) {
+        GTP5G_ERR(NULL, "Failed to read debug level: %s\n", buffer);
+        goto err;
+    }
+    
+    if (dbg < 0 || dbg > 4) {
+        GTP5G_ERR(NULL, "Failed to set debug level: %d <0 or >4\n", dbg);
+        goto err;
+    }
+    
+    dbg_trace_lvl = dbg;
+    return strnlen(buf, buf_len);
+err:
+    return -1;
 }
 
 static int proc_dbg_read(struct inode *inode, struct file *file)
 {
     return single_open(file, gtp5g_dbg_read, NULL);
+}
+
+static int gtp5g_pdr_read(struct seq_file *s, void *v) 
+{
+    if (!proc_pdr_id) {
+        seq_printf(s, "Given PDR ID does not exists\n");
+        return -1;
+    }
+    
+    seq_printf(s, "PDR: \n");
+    seq_printf(s, "\t ID    : %u\n", proc_pdr.id);
+    seq_printf(s, "\t FAR ID: %u\n", proc_pdr.far_id);
+    seq_printf(s, "\t QER ID: %u\n", proc_pdr.qer_id);
+    return 0;
+}
+
+static ssize_t proc_pdr_write(struct file *filp, const char __user *buffer,
+    size_t len, loff_t *dptr) 
+{
+    char buf[128], dev_name[32];
+    u8 found = 0;
+    unsigned long buf_len = min(sizeof(buf) - 1, len);
+    struct gtp5g_pdr *pdr;
+    struct gtp5g_dev *gtp;
+    
+    if (copy_from_user(buf, buffer, buf_len)) {
+        GTP5G_ERR(NULL, "Failed to read buffer: %s\n", buf);
+        goto err;
+    }
+    
+    buf[buf_len] = 0;
+    if (sscanf(buf, "%s %hu", dev_name, &proc_pdr_id) != 2) {
+        GTP5G_ERR(NULL, "proc write of PDR Dev & ID: %s is not valid\n", buf);
+        goto err;
+    }
+    
+    list_for_each_entry_rcu(gtp, &proc_gtp5g_dev, proc_list) {
+        if (strcmp(dev_name, netdev_name(gtp->dev)) == 0) {
+            found = 1;
+            break;
+        }
+    }
+    if (!found) {
+        GTP5G_ERR(NULL, "Given dev: %s not exists\n", dev_name);
+        goto err;
+    }
+
+    pdr = pdr_find_by_id(gtp, proc_pdr_id);
+    if (!pdr) {
+        GTP5G_ERR(NULL, "Given PDR ID : %u not exists\n", proc_pdr_id);
+        goto err;
+    }
+    
+    memset(&proc_pdr, 0, sizeof(proc_pdr));
+    proc_pdr.id = pdr->id;
+    if (pdr->far_id)
+        proc_pdr.far_id = *pdr->far_id;
+    if (pdr->qer_id)
+        proc_pdr.qer_id = *pdr->qer_id;
+    
+	return strnlen(buf, buf_len);
+err:
+    proc_pdr_id = 0;
+    return -1;
+}
+
+static int proc_pdr_read(struct inode *inode, struct file *file)
+{
+    return single_open(file, gtp5g_pdr_read, NULL);
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
@@ -3671,11 +3742,32 @@ static const struct file_operations proc_gtp5g_dbg_ops = {
 };
 #endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
+static const struct proc_ops proc_gtp5g_pdr_ops = {
+	.proc_open	= proc_dbg_read,
+	.proc_read	= seq_read,
+	.proc_write	= proc_dbg_write,
+	.proc_lseek	= seq_lseek,
+	.proc_release = single_release,
+};
+#else
+static const struct file_operations proc_gtp5g_pdr_ops = {
+    .owner      = THIS_MODULE,
+    .open       = proc_pdr_read,
+    .read       = seq_read,
+    .write      = proc_pdr_write,
+    .llseek     = seq_lseek,
+    .release    = single_release,
+};
+#endif
+
 static int __init gtp5g_init(void)
 {
     int err;
 
     GTP5G_LOG(NULL, "Gtp5g Module initialization Ver: %s\n", DRV_VERSION);
+
+    INIT_LIST_HEAD(&proc_gtp5g_dev);
 
     get_random_bytes(&gtp5g_h_initval, sizeof(gtp5g_h_initval));
 
@@ -3709,11 +3801,19 @@ static int __init gtp5g_init(void)
         goto remove_gtp5g_proc;
 	}
 
+    proc_gtp5g_pdr = proc_create("pdr", (S_IFREG | S_IRUGO | S_IWUGO), proc_gtp5g, &proc_gtp5g_pdr_ops);
+    if (!proc_gtp5g_pdr) {
+        GTP5G_ERR(NULL, "Failed to create /proc/gtp5g/pdr\n");
+        goto remove_dbg_proc;
+	}
+
     GTP5G_LOG(NULL, "5G GTP module loaded (pdr ctx size %zd bytes)\n",
         sizeof(struct gtp5g_pdr));
 
     return 0;
 
+remove_dbg_proc:
+    remove_proc_entry("dbg", proc_gtp5g);
 remove_gtp5g_proc:
 	remove_proc_entry("gtp5g", NULL);
 unreg_pernet:
@@ -3732,8 +3832,9 @@ static void __exit gtp5g_fini(void)
     genl_unregister_family(&gtp5g_genl_family);
     rtnl_link_unregister(&gtp5g_link_ops);
     unregister_pernet_subsys(&gtp5g_net_ops);
-
-	remove_proc_entry("dbg", proc_gtp5g);
+    
+    remove_proc_entry("pdr", proc_gtp5g);
+    remove_proc_entry("dbg", proc_gtp5g);
 	remove_proc_entry("gtp5g", NULL);
 
     GTP5G_LOG(NULL, "5G GTP module unloaded\n");
