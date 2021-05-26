@@ -26,6 +26,19 @@ Remove the kernel module from the system
 ```
 sudo make uninstall
 ```
+### Create a gtp5g interface and update Rules
+The gtp5g interface will be created by using libgtp5gnl scripts
+1) Checkout the latest or compatible source of libgtp5gnl
+2) cd libgtp5gnl
+3) Create an interface and update rules
+    + sudo ./run.sh UPF_PDR_FAR_QER
+4) Troubleshoot
+    + dmesg
+    + echo #interfaceName #ID > /proc/gtp5g/pdr
+    + cat /proc/gtp5g/pdr
+5) Delete an interface 
+    + sudo ./run.sh Clean
+    + Note: It will delete list of rules and interface
 
 ## Change Log
 ### v0.2.0
