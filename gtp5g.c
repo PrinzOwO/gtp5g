@@ -114,11 +114,11 @@ struct sdf_filter {
 };
 
 struct gtp5g_pdi {
-//    u8      src_iface;                // 0: Access, 1: Core, 2: SGi-LAN/N6-LAN, 3: CP-function
-    struct in_addr *ue_addr_ipv4;
-//  char *network_instance
+    //u8                src_iface;                // 0: Access, 1: Core, 2: SGi-LAN/N6-LAN, 3: CP-function
+    struct in_addr      *ue_addr_ipv4;
+    //char              *network_instance
     struct local_f_teid *f_teid;
-    struct sdf_filter *sdf;
+    struct sdf_filter   *sdf;
 };
 
 struct outer_header_creation {
@@ -209,6 +209,9 @@ struct gtp5g_dev {
     /* IEs list related to PDR */
     struct hlist_head    	*related_far_hash;     // PDR list waiting the FAR to handle
     struct hlist_head    	*related_qer_hash;     // PDR list waiting the QER to handle
+
+    /* Used by proc interface */
+    struct list_head        proc_list;
 };
 
 struct gtp5g_pktinfo {
@@ -240,6 +243,21 @@ static unsigned int gtp5g_net_id __read_mostly;
 
 struct gtp5g_net {
     struct list_head gtp5g_dev_list;
+};
+
+struct list_head proc_gtp5g_dev;
+struct proc_gtp5g_pdr {
+    u16     id;
+    u32     precedence;
+    u8      ohr;
+    u32     role_addr4;
+
+    u32     pdi_ue_addr4;
+    u32     pdi_fteid;
+    u32     pdi_gtpu_addr4;
+    
+    u32     far_id;
+    u32     qer_id;
 };
 
 static struct gtp5g_qer *gtp5g_find_qer(struct net *net, struct nlattr *nla[]);
@@ -282,10 +300,21 @@ static int unix_sock_send(struct gtp5g_pdr *pdr, void *buf, u32 len)
     msg.msg_controllen = 0;
     msg.msg_flags = 0;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+    oldfs = force_uaccess_begin();
+#else
     oldfs = get_fs();
     set_fs(KERNEL_DS);
+#endif
+
     rt = sock_sendmsg(pdr->sock_for_buf, &msg);
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+    force_uaccess_end(oldfs);
+#else
     set_fs(oldfs);
+#endif	
+
 
     return rt;
 }
@@ -1221,7 +1250,7 @@ static int gtp5g_drop_skb_ipv4(struct sk_buff *skb, struct net_device *dev)
 {
     dev->stats.tx_dropped++;
     dev_kfree_skb(skb);
-    return 0;
+    return FAR_ACTION_DROP;
 }
 
 static void gtp5g_fwd_emark_skb_ipv4(struct sk_buff *skb,
@@ -1306,12 +1335,12 @@ err:
 static int gtp5g_buf_skb_ipv4(struct sk_buff *skb, struct net_device *dev,
                                 struct gtp5g_pdr *pdr)
 {
-    int rt = 0;
     // TODO: handle nonlinear part
     if (unix_sock_send(pdr, skb->data, skb_headlen(skb)) < 0)
-        rt = -EBADMSG;
+        GTP5G_ERR(dev, "Failed to send skb to unix domain socket PDR(%u)", pdr->id);
 
-    return rt;
+    dev_kfree_skb(skb);
+    return FAR_ACTION_BUFF;
 }
 
 static int gtp5g_handle_skb_ipv4(struct sk_buff *skb, struct net_device *dev,
@@ -1353,34 +1382,32 @@ static int gtp5g_handle_skb_ipv4(struct sk_buff *skb, struct net_device *dev,
         // The NOCP flag may only be set if the BUFF flag is set.
         // The DUPL flag may be set with any of the DROP, FORW, BUFF and NOCP flags.
         switch (far->action & FAR_ACTION_MASK) {
-            case FAR_ACTION_DROP:
-                return gtp5g_drop_skb_ipv4(skb, dev);
-            case FAR_ACTION_FORW:
-                return gtp5g_fwd_skb_ipv4(skb, dev, pktinfo, pdr);
-            case FAR_ACTION_BUFF:
-                return gtp5g_buf_skb_ipv4(skb, dev, pdr);
-            default:
-                GTP5G_ERR(dev, "Unspec apply action[%u] in FAR[%u] and related to PDR[%u]",
-                    far->action, far->id, pdr->id);
+        case FAR_ACTION_DROP:
+            return gtp5g_drop_skb_ipv4(skb, dev);
+        case FAR_ACTION_FORW:
+            return gtp5g_fwd_skb_ipv4(skb, dev, pktinfo, pdr);
+        case FAR_ACTION_BUFF:
+            return gtp5g_buf_skb_ipv4(skb, dev, pdr);
+        default:
+            GTP5G_ERR(dev, "Unspec apply action[%u] in FAR[%u] and related to PDR[%u]",
+                far->action, far->id, pdr->id);
         }
     }
 
     return -ENOENT;
 }
 
-static void gtp5g_xmit_skb_ipv4(struct sk_buff *skb, struct gtp5g_pktinfo *pktinfo, u32 action)
+static void gtp5g_xmit_skb_ipv4(struct sk_buff *skb, struct gtp5g_pktinfo *pktinfo)
 {
-    if (action & FAR_ACTION_FORW) {
-        //GTP5G_ERR(pktinfo->dev, "gtp -> IP src: %pI4 dst: %pI4\n",
-        //           &pktinfo->iph->saddr, &pktinfo->iph->daddr);
-        udp_tunnel_xmit_skb(pktinfo->rt, pktinfo->sk, skb,
-                            pktinfo->fl4.saddr, pktinfo->fl4.daddr,
-                            pktinfo->iph->tos,
-                            ip4_dst_hoplimit(&pktinfo->rt->dst),
-                            0,
-                            pktinfo->gtph_port, pktinfo->gtph_port,
-                            true, true);
-    }
+    //GTP5G_ERR(pktinfo->dev, "gtp -> IP src: %pI4 dst: %pI4\n",
+    //           &pktinfo->iph->saddr, &pktinfo->iph->daddr);
+    udp_tunnel_xmit_skb(pktinfo->rt, pktinfo->sk, skb,
+                        pktinfo->fl4.saddr, pktinfo->fl4.daddr,
+                        pktinfo->iph->tos,
+                        ip4_dst_hoplimit(&pktinfo->rt->dst),
+                        0,
+                        pktinfo->gtph_port, pktinfo->gtph_port,
+                        true, true);
 }
 
 /**
@@ -1416,11 +1443,8 @@ static netdev_tx_t gtp5g_dev_xmit(struct sk_buff *skb, struct net_device *dev)
     if (ret < 0)
         goto tx_err;
 
-    switch (proto) {
-    case ETH_P_IP:
-        gtp5g_xmit_skb_ipv4(skb, &pktinfo, ret);
-        break;
-    }
+    if (ret == FAR_ACTION_FORW)
+        gtp5g_xmit_skb_ipv4(skb, &pktinfo);
 
     return NETDEV_TX_OK;
 
@@ -1840,7 +1864,6 @@ static int gtp5g_drop_skb_encap(struct sk_buff *skb, struct net_device *dev)
 {
     dev->stats.tx_dropped++;
     dev_kfree_skb(skb);
-
     return 0;
 }
 
@@ -1918,13 +1941,11 @@ static int gtp5g_fwd_skb_encap(struct sk_buff *skb, struct net_device *dev,
 
 static int gtp5g_buf_skb_encap(struct sk_buff *skb, struct net_device *dev, struct gtp5g_pdr *pdr)
 {
-    int rt = 0;
     if (unix_sock_send(pdr, skb->data, skb_headlen(skb)) < 0)
-        rt = -EBADMSG;
+        GTP5G_ERR(dev, "Failed to send skb to unix domain socket PDR(%u)", pdr->id);
 
     dev_kfree_skb(skb);
-
-    return rt;
+    return 0;
 }
 
 static int gtp5g_rx(struct gtp5g_pdr *pdr, struct sk_buff *skb,
@@ -1952,19 +1973,19 @@ static int gtp5g_rx(struct gtp5g_pdr *pdr, struct sk_buff *skb,
         // The NOCP flag may only be set if the BUFF flag is set.
         // The DUPL flag may be set with any of the DROP, FORW, BUFF and NOCP flags.
         switch(far->action & FAR_ACTION_MASK) {
-            case FAR_ACTION_DROP: 
-                rt = gtp5g_drop_skb_encap(skb, pdr->dev);
-                break;
-            case FAR_ACTION_FORW:
-                rt = gtp5g_fwd_skb_encap(skb, pdr->dev, hdrlen, pdr);
-                break;
-            case FAR_ACTION_BUFF:
-                rt = gtp5g_buf_skb_encap(skb, pdr->dev, pdr);
-                break;
-            default:
-                pr_err("Unspec apply action[%u] in FAR[%u] and related to PDR[%u]",
-                    far->action, far->id, pdr->id);
-                rt = -1;
+        case FAR_ACTION_DROP: 
+            rt = gtp5g_drop_skb_encap(skb, pdr->dev);
+            break;
+        case FAR_ACTION_FORW:
+            rt = gtp5g_fwd_skb_encap(skb, pdr->dev, hdrlen, pdr);
+            break;
+        case FAR_ACTION_BUFF:
+            rt = gtp5g_buf_skb_encap(skb, pdr->dev, pdr);
+            break;
+        default:
+            pr_err("Unspec apply action[%u] in FAR[%u] and related to PDR[%u]",
+                far->action, far->id, pdr->id);
+            rt = -1;
         }
     } else {
         // TODO: this action is not supported
@@ -1975,37 +1996,6 @@ static int gtp5g_rx(struct gtp5g_pdr *pdr, struct sk_buff *skb,
     
     return rt;
 }
-#if 0
-static int get_gtpu_header_len(struct sk_buff *skb, u16 prefix_hdrlen)
-{
-    u8 *gtp1 = (skb->data + prefix_hdrlen);
-	struct gtpv1_hdr *gtp1;
-    u8 *ext_hdr = NULL;
-
-    /** TS 29.281 Chapter 5.1 and Figure 5.1-1
-     * GTP-U header at least 8 byte
-     *
-     * This field shall be present if and only if any one or more of the S, PN and E flags are set.
-     * This field means seq number (2 Octect), N-PDU number (1 Octet) and  Next ext hdr type (1 Octet).
-     */
-    u16 rt_len = 8 + ((*gtp1 & 0x07) ? 4 : 0);
-
-    /** TS 29.281 Chapter 5.2 and Figure 5.2.1-1
-     * The length of the Extension header shall be defined in a variable length of 4 octets,
-     * i.e. m+1 = n*4 octets, where n is a positive integer.
-     */
-    if (*gtp1 & 0x04) {
-        /* ext_hdr will always point to "Next ext hdr type" */
-        while (*(ext_hdr = gtp1 + rt_len - 1)) {
-            rt_len += (*(++ext_hdr)) * 4;
-            if (!pskb_may_pull(skb, rt_len + prefix_hdrlen))
-                return -1;
-        }
-    }
-
-    return rt_len;
-}
-#endif
 
 static int get_gtpu_header_len(struct gtpv1_hdr *gtpv1, u16 prefix_hdrlen)
 {
@@ -2096,7 +2086,7 @@ static int gtp1u_udp_encap_recv(struct gtp5g_dev *gtp, struct sk_buff *skb)
     pdr = pdr_find_by_gtp1u(gtp, skb, hdrlen, gtpv1->tid);
     if (!pdr) {
         GTP5G_ERR(gtp->dev, "No PDR match this skb : teid[%d]\n", ntohl(gtpv1->tid));
-        return 1;
+        return -1;
     }
 
     return gtp5g_rx(pdr, skb, hdrlen, gtp->role);
@@ -2105,8 +2095,12 @@ static int gtp1u_udp_encap_recv(struct gtp5g_dev *gtp, struct sk_buff *skb)
 /**
  * Entry function for Uplink packets
  *
- * UDP encapsulation receive handler. See net/ipv4/udp.c.
- * Return codes: 0: success, <0: error, >0: pass up to userspace UDP socket.
+ * UDP encapsulation receive handler. See net/ipv4/udp.c
+ * Return codes: 
+ *  =0 : if skb was successfully passed to the encap handler or
+ *       was discarded by it
+ *  >0 : if skb should be passed on to UDP
+ *  <0 : if skb should be resubmitted as proto -N
  */
 static int gtp5g_encap_recv(struct sock *sk, struct sk_buff *skb)
 {
@@ -2126,7 +2120,7 @@ static int gtp5g_encap_recv(struct sock *sk, struct sk_buff *skb)
         ret = -1; // Should not happen
     }
 
-    switch(ret) {
+    switch (ret) {
     case 1:
         GTP5G_ERR(gtp->dev, "Pass up to the process\n");
         break;
@@ -2246,6 +2240,7 @@ static int gtp5g_newlink(struct net *src_net, struct net_device *dev,
 
     gn = net_generic(dev_net(dev), gtp5g_net_id);
     list_add_rcu(&gtp->list, &gn->gtp5g_dev_list);
+    list_add_rcu(&gtp->proc_list, &proc_gtp5g_dev);
 
     GTP5G_ERR(dev, "registered new 5G GTP interface\n");
 
@@ -2265,6 +2260,7 @@ static void gtp5g_dellink(struct net_device *dev, struct list_head *head)
 
     gtp5g_hashtable_free(gtp);
     list_del_rcu(&gtp->list);
+    list_del_rcu(&gtp->proc_list);
     unregister_netdevice_queue(dev, head);
 
     GTP5G_ERR(dev, "deregistered 5G GTP interface\n");
@@ -3616,26 +3612,9 @@ static struct pernet_operations gtp5g_net_ops = {
 
 struct proc_dir_entry *proc_gtp5g = NULL;
 struct proc_dir_entry *proc_gtp5g_dbg = NULL;
-
-int gtp5g_atoi(char *str, int *result)
-{
-    int n = 0;
-    char *p = str;
-
-    *result = 0;
-    while (*p >= '0' && *p <= '9')
-    {
-        n++;
-        *result *= 10;
-        *result += *p - '0';
-        p++;
-    }
-
-    if (*p++ == '\n')
-        n++;
-
-    return n;
-}
+struct proc_dir_entry *proc_gtp5g_pdr = NULL;
+struct proc_gtp5g_pdr proc_pdr;
+u16 proc_pdr_id = 0;
 
 static int gtp5g_dbg_read(struct seq_file *s, void *v) 
 {
@@ -3649,31 +3628,131 @@ static int gtp5g_dbg_read(struct seq_file *s, void *v)
 	return 0;
 }
 
-static ssize_t proc_dbg_write(struct file *filp, const char __user *buff,
-            size_t len, loff_t *dptr) 
+static ssize_t proc_dbg_write(struct file *filp, const char __user *buffer,
+    size_t len, loff_t *dptr) 
 {
-	char str_in[8];
-	unsigned long str_len = min(len, sizeof(str_in) - 1);
-	int dbg;
-
-	if (copy_from_user(str_in, buff, str_len)) 
-		return -1;
-
-	str_in[str_len] = '\0';
-
-	gtp5g_atoi(str_in, &dbg);
-
-	if (dbg >= 0 && dbg <= 4) {
-		dbg_trace_lvl = dbg;
-		return str_len;
-	}
-	
-	return -1;
+    char buf[16];
+    unsigned long buf_len = min(len, sizeof(buf) - 1);
+    int dbg;
+    
+    if (copy_from_user(buf, buffer, buf_len)) {
+        GTP5G_ERR(NULL, "Failed to read buffer: %s\n", buffer);
+        goto err;
+    }
+    
+    buf[buf_len] = 0;
+    if (sscanf(buf, "%d", &dbg) != 1) {
+        GTP5G_ERR(NULL, "Failed to read debug level: %s\n", buffer);
+        goto err;
+    }
+    
+    if (dbg < 0 || dbg > 4) {
+        GTP5G_ERR(NULL, "Failed to set debug level: %d <0 or >4\n", dbg);
+        goto err;
+    }
+    
+    dbg_trace_lvl = dbg;
+    return strnlen(buf, buf_len);
+err:
+    return -1;
 }
 
 static int proc_dbg_read(struct inode *inode, struct file *file)
 {
     return single_open(file, gtp5g_dbg_read, NULL);
+}
+
+static int gtp5g_pdr_read(struct seq_file *s, void *v) 
+{
+    if (!proc_pdr_id) {
+        seq_printf(s, "Given PDR ID does not exists\n");
+        return -1;
+    }
+    
+    seq_printf(s, "PDR: \n");
+    seq_printf(s, "\t ID : %u\n", proc_pdr.id);
+    seq_printf(s, "\t Precedence: %u\n", proc_pdr.precedence);
+    seq_printf(s, "\t OHR: %u\n", proc_pdr.ohr);
+    seq_printf(s, "\t Role Addr4: %#08x\n", ntohl(proc_pdr.role_addr4));
+    seq_printf(s, "\t PDI UE Addr4: %#08x\n", ntohl(proc_pdr.pdi_ue_addr4));
+    seq_printf(s, "\t PDI TEID: %#08x\n", ntohl(proc_pdr.pdi_fteid));
+    seq_printf(s, "\t PDU GTPU Addr4: %#08x\n", ntohl(proc_pdr.pdi_gtpu_addr4));
+    seq_printf(s, "\t FAR ID: %u\n", proc_pdr.far_id);
+    seq_printf(s, "\t QER ID: %u\n", proc_pdr.qer_id);
+    return 0;
+}
+
+static ssize_t proc_pdr_write(struct file *filp, const char __user *buffer,
+    size_t len, loff_t *dptr) 
+{
+    char buf[128], dev_name[32];
+    u8 found = 0;
+    unsigned long buf_len = min(sizeof(buf) - 1, len);
+    struct gtp5g_pdr *pdr;
+    struct gtp5g_dev *gtp;
+    
+    if (copy_from_user(buf, buffer, buf_len)) {
+        GTP5G_ERR(NULL, "Failed to read buffer: %s\n", buf);
+        goto err;
+    }
+    
+    buf[buf_len] = 0;
+    if (sscanf(buf, "%s %hu", dev_name, &proc_pdr_id) != 2) {
+        GTP5G_ERR(NULL, "proc write of PDR Dev & ID: %s is not valid\n", buf);
+        goto err;
+    }
+    
+    list_for_each_entry_rcu(gtp, &proc_gtp5g_dev, proc_list) {
+        if (strcmp(dev_name, netdev_name(gtp->dev)) == 0) {
+            found = 1;
+            break;
+        }
+    }
+    if (!found) {
+        GTP5G_ERR(NULL, "Given dev: %s not exists\n", dev_name);
+        goto err;
+    }
+
+    pdr = pdr_find_by_id(gtp, proc_pdr_id);
+    if (!pdr) {
+        GTP5G_ERR(NULL, "Given PDR ID : %u not exists\n", proc_pdr_id);
+        goto err;
+    }
+    
+    memset(&proc_pdr, 0, sizeof(proc_pdr));
+    proc_pdr.id = pdr->id;
+    proc_pdr.precedence = pdr->precedence;
+    
+    if (pdr->outer_header_removal) 
+        proc_pdr.ohr = *pdr->outer_header_removal;
+    
+    if (pdr->role_addr_ipv4.s_addr)
+        proc_pdr.role_addr4 = pdr->role_addr_ipv4.s_addr;
+    
+    if (pdr->pdi) {
+        if (pdr->pdi->ue_addr_ipv4) 
+            proc_pdr.pdi_ue_addr4 = pdr->pdi->ue_addr_ipv4->s_addr;
+        if (pdr->pdi->f_teid) {
+            proc_pdr.pdi_fteid = pdr->pdi->f_teid->teid;
+            proc_pdr.pdi_gtpu_addr4 = pdr->pdi->f_teid->gtpu_addr_ipv4.s_addr;
+        }
+    }
+
+    if (pdr->far_id)
+        proc_pdr.far_id = *pdr->far_id;
+    
+    if (pdr->qer_id)
+        proc_pdr.qer_id = *pdr->qer_id;
+
+	return strnlen(buf, buf_len);
+err:
+    proc_pdr_id = 0;
+    return -1;
+}
+
+static int proc_pdr_read(struct inode *inode, struct file *file)
+{
+    return single_open(file, gtp5g_pdr_read, NULL);
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
@@ -3695,11 +3774,32 @@ static const struct file_operations proc_gtp5g_dbg_ops = {
 };
 #endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
+static const struct proc_ops proc_gtp5g_pdr_ops = {
+	.proc_open	= proc_pdr_read,
+	.proc_read	= seq_read,
+	.proc_write	= proc_pdr_write,
+	.proc_lseek	= seq_lseek,
+	.proc_release = single_release,
+};
+#else
+static const struct file_operations proc_gtp5g_pdr_ops = {
+    .owner      = THIS_MODULE,
+    .open       = proc_pdr_read,
+    .read       = seq_read,
+    .write      = proc_pdr_write,
+    .llseek     = seq_lseek,
+    .release    = single_release,
+};
+#endif
+
 static int __init gtp5g_init(void)
 {
     int err;
 
     GTP5G_LOG(NULL, "Gtp5g Module initialization Ver: %s\n", DRV_VERSION);
+
+    INIT_LIST_HEAD(&proc_gtp5g_dev);
 
     get_random_bytes(&gtp5g_h_initval, sizeof(gtp5g_h_initval));
 
@@ -3733,11 +3833,19 @@ static int __init gtp5g_init(void)
         goto remove_gtp5g_proc;
 	}
 
+    proc_gtp5g_pdr = proc_create("pdr", (S_IFREG | S_IRUGO | S_IWUGO), proc_gtp5g, &proc_gtp5g_pdr_ops);
+    if (!proc_gtp5g_pdr) {
+        GTP5G_ERR(NULL, "Failed to create /proc/gtp5g/pdr\n");
+        goto remove_dbg_proc;
+	}
+
     GTP5G_LOG(NULL, "5G GTP module loaded (pdr ctx size %zd bytes)\n",
         sizeof(struct gtp5g_pdr));
 
     return 0;
 
+remove_dbg_proc:
+    remove_proc_entry("dbg", proc_gtp5g);
 remove_gtp5g_proc:
 	remove_proc_entry("gtp5g", NULL);
 unreg_pernet:
@@ -3756,8 +3864,9 @@ static void __exit gtp5g_fini(void)
     genl_unregister_family(&gtp5g_genl_family);
     rtnl_link_unregister(&gtp5g_link_ops);
     unregister_pernet_subsys(&gtp5g_net_ops);
-
-	remove_proc_entry("dbg", proc_gtp5g);
+    
+    remove_proc_entry("pdr", proc_gtp5g);
+    remove_proc_entry("dbg", proc_gtp5g);
 	remove_proc_entry("gtp5g", NULL);
 
     GTP5G_LOG(NULL, "5G GTP module unloaded\n");
