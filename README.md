@@ -2,6 +2,14 @@
 gtp5g is a customized Linux kernel module gtp5g to handle packet by PFCP IEs such as PDR and FAR.
 For detailed information, please reference to 3GPP specification TS 29.281 and TS 29.244.
 
+## Note:1
+The latest implementation of gtp5g and libgtp5gnl is in
+
+https://github.com/free5gc/gtp5g
+
+https://github.com/free5gc/libgtp5gnl
+
+
 ## Notice
 Due to the evolution of Linux kernel, this module would not work with every kernel version.
 Please run this module with kernel version `5.0.0-23-generic` or upper than `5.4` (Ubuntu 20.04).
